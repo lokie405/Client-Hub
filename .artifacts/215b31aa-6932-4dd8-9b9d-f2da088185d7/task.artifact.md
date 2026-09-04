@@ -1,0 +1,18 @@
+- `[x]` Project Configuration
+    - `[x]` Update `libs.versions.toml`
+    - `[x]` Update `app/build.gradle.kts`
+- `[x]` Data Layer Implementation
+    - `[x]` Define `ClientEntity`, `PhoneEntity`, `NoteEntity`
+    - `[x]` Create `ClientDao` with relations
+    - `[x]` Initialize `AppDatabase`
+- `[x]` UI Layer Implementation
+    - `[x]` Create `ClientViewModel`
+    - `[x]` Implement `ClientListScreen` (Search + Cards)
+    - `[x]` Implement `ClientDetailScreen` (Form + Media)
+    - `[x]` Setup Navigation and Theme switching in `MainActivity`
+- `[x]` Feature Integration
+    - `[x]` Gallery integration for shop photo
+    - `[x]` Text notes implemented
+    - `[x]` Dynamic phone fields
+- `[x]` Verification
+    - `[x]` Project syncs and compiles successfully
