@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.app.Application
 import android.location.Geocoder
 import android.net.Uri
+import android.os.Environment
+import android.provider.CallLog
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -13,11 +15,13 @@ import com.google.android.gms.tasks.CancellationTokenSource
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.seryoga.myapplication.data.AppDatabase
+import com.seryoga.myapplication.data.CallLogEntity
 import com.seryoga.myapplication.data.ClientDao
 import com.seryoga.myapplication.data.ClientEntity
 import com.seryoga.myapplication.data.ClientWithDetails
 import com.seryoga.myapplication.data.NoteEntity
 import com.seryoga.myapplication.data.PhoneEntity
+import com.seryoga.myapplication.data.PhoneWithStats
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,7 +34,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStreamReader
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -38,17 +45,6 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
     private val clientDao: ClientDao = AppDatabase.getDatabase(application).clientDao()
     private val fusedLocationClient = LocationServices.getFusedLocationProviderClient(application)
     private val gson = Gson()
-
-    fun getPhotoUri(): Uri {
-        val directory = File(getApplication<Application>().filesDir, "Pictures")
-        if (!directory.exists()) directory.mkdirs()
-        val file = File(directory, "shop_${System.currentTimeMillis()}.jpg")
-        return FileProvider.getUriForFile(
-            getApplication<Application>(),
-            "com.seryoga.myapplication.fileprovider",
-            file
-        )
-    }
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery
@@ -67,46 +63,66 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
         _searchQuery.value = query
     }
 
-    @SuppressLint("MissingPermission")
-    fun getCurrentLocationAddress(onResult: (String?, Double?, Double?) -> Unit) {
-        viewModelScope.launch {
-            try {
-                val location = withContext(Dispatchers.IO) {
-                    val result = fusedLocationClient.getCurrentLocation(
-                        Priority.PRIORITY_HIGH_ACCURACY,
-                        CancellationTokenSource().token
-                    )
-                    com.google.android.gms.tasks.Tasks.await(result)
-                }
-
-                location?.let {
-                    getAddressFromLocation(it.latitude, it.longitude) { addr ->
-                        onResult(addr, it.latitude, it.longitude)
-                    }
-                } ?: onResult(null, null, null)
-            } catch (e: Exception) {
-                onResult(null, null, null)
-            }
+    suspend fun getPhonesWithStats(clientId: Long): List<PhoneWithStats> {
+        val details = clientDao.getClientById(clientId) ?: return emptyList()
+        refreshCallLogs(details.phones.map { it.phoneNumber })
+        
+        return details.phones.map { phone ->
+            PhoneWithStats(
+                phone = phone,
+                incomingCount = clientDao.getIncomingCount(phone.phoneNumber),
+                outgoingCount = clientDao.getOutgoingCount(phone.phoneNumber)
+            )
         }
     }
 
-    fun getAddressFromLocation(latitude: Double, longitude: Double, onResult: (String?) -> Unit) {
-        viewModelScope.launch {
-            try {
-                val addressStr = withContext(Dispatchers.IO) {
-                    val geocoder = Geocoder(getApplication(), Locale.getDefault())
-                    val addresses = geocoder.getFromLocation(latitude, longitude, 1)
-                    if (!addresses.isNullOrEmpty()) {
-                        val addr = addresses[0]
-                        val city = addr.locality ?: ""
-                        val street = addr.thoroughfare ?: ""
-                        val house = addr.subThoroughfare ?: ""
-                        listOf(city, street, house).filter { it.isNotBlank() }.joinToString(", ")
-                    } else null
+    fun getCallHistory(phoneNumber: String): StateFlow<List<CallLogEntity>> {
+        return clientDao.getCallLogsForPhone(phoneNumber)
+            .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    }
+
+    @SuppressLint("Range")
+    suspend fun refreshCallLogs(phoneNumbers: List<String>) {
+        if (phoneNumbers.isEmpty()) return
+        
+        withContext(Dispatchers.IO) {
+            val contentResolver = getApplication<Application>().contentResolver
+            phoneNumbers.forEach { phone ->
+                // Extract last 9 digits for flexible matching (covers most cases)
+                val cleanPhone = phone.replace(Regex("[^0-9]"), "")
+                if (cleanPhone.length < 9) return@forEach
+                val matchPattern = "%${cleanPhone.takeLast(9)}"
+
+                try {
+                    val cursor = contentResolver.query(
+                        CallLog.Calls.CONTENT_URI,
+                        null,
+                        "${CallLog.Calls.NUMBER} LIKE ?",
+                        arrayOf(matchPattern),
+                        "${CallLog.Calls.DATE} DESC"
+                    )
+
+                    cursor?.use {
+                        while (it.moveToNext()) {
+                            val type = it.getInt(it.getColumnIndex(CallLog.Calls.TYPE))
+                            val date = it.getLong(it.getColumnIndex(CallLog.Calls.DATE))
+                            val duration = it.getInt(it.getColumnIndex(CallLog.Calls.DURATION))
+
+                            if (type == CallLog.Calls.INCOMING_TYPE || type == CallLog.Calls.OUTGOING_TYPE) {
+                                clientDao.insertCallLog(
+                                    CallLogEntity(
+                                        phoneNumber = phone,
+                                        type = if (type == CallLog.Calls.INCOMING_TYPE) 1 else 2,
+                                        timestamp = date,
+                                        duration = duration
+                                    )
+                                )
+                            }
+                        }
+                    }
+                } catch (e: SecurityException) {
+                    // Log or handle
                 }
-                onResult(addressStr)
-            } catch (e: Exception) {
-                onResult(null)
             }
         }
     }
@@ -118,7 +134,6 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
         middleName: String,
         shopName: String,
         phones: List<String>,
-        shopPhotoUri: String? = null,
         address: String? = null,
         lat: Double? = null,
         lon: Double? = null,
@@ -132,7 +147,6 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     lastName = lastName,
                     middleName = middleName,
                     shopName = shopName,
-                    shopPhotoUri = shopPhotoUri,
                     addressManual = address,
                     latitude = lat,
                     longitude = lon,
@@ -140,7 +154,6 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                 )
             )
             
-            // If updating, clear old phones first to avoid duplicates
             if (id != null) {
                 clientDao.deletePhonesForClient(id)
             }
@@ -150,7 +163,31 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     clientDao.insertPhone(PhoneEntity(clientId = clientId, phoneNumber = phone))
                 }
             }
+            
+            autoExportData()
         }
+    }
+
+    private suspend fun autoExportData() {
+        try {
+            val allClients = clientDao.getAllClients().first()
+            val recordCount = allClients.size
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+            val fileName = "costumer_${timestamp}_$recordCount.json"
+            
+            val json = gson.toJson(allClients)
+            
+            withContext(Dispatchers.IO) {
+                val directory = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+                if (directory != null) {
+                    if (!directory.exists()) directory.mkdirs()
+                    val file = File(directory, fileName)
+                    FileOutputStream(file).use {
+                        it.write(json.toByteArray())
+                    }
+                }
+            }
+        } catch (e: Exception) {}
     }
 
     fun addNote(clientId: Long, content: String) {
@@ -167,7 +204,6 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             clientDao.deleteClient(clientWithDetails.client)
             clientDao.deletePhonesForClient(clientWithDetails.client.id)
-            // Note: Room should handle cascaded deletes if configured, but let's be explicit
         }
     }
 
@@ -216,6 +252,50 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                 }
             } catch (e: Exception) {
                 onComplete(false)
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun getCurrentLocationAddress(onResult: (String?, Double?, Double?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val location = withContext(Dispatchers.IO) {
+                    val result = fusedLocationClient.getCurrentLocation(
+                        Priority.PRIORITY_HIGH_ACCURACY,
+                        CancellationTokenSource().token
+                    )
+                    com.google.android.gms.tasks.Tasks.await(result)
+                }
+
+                location?.let {
+                    getAddressFromLocation(it.latitude, it.longitude) { addr ->
+                        onResult(addr, it.latitude, it.longitude)
+                    }
+                } ?: onResult(null, null, null)
+            } catch (e: Exception) {
+                onResult(null, null, null)
+            }
+        }
+    }
+
+    fun getAddressFromLocation(latitude: Double, longitude: Double, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val addressStr = withContext(Dispatchers.IO) {
+                    val geocoder = Geocoder(getApplication(), Locale.getDefault())
+                    val addresses = geocoder.getFromLocation(latitude, longitude, 1)
+                    if (!addresses.isNullOrEmpty()) {
+                        val addr = addresses[0]
+                        val city = addr.locality ?: ""
+                        val street = addr.thoroughfare ?: ""
+                        val house = addr.subThoroughfare ?: ""
+                        listOf(city, street, house).filter { it.isNotBlank() }.joinToString(", ")
+                    } else null
+                }
+                onResult(addressStr)
+            } catch (e: Exception) {
+                onResult(null)
             }
         }
     }

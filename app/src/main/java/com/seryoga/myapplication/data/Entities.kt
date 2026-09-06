@@ -2,6 +2,7 @@ package com.seryoga.myapplication.data
 
 import androidx.room.Embedded
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.Relation
 
@@ -12,7 +13,6 @@ data class ClientEntity(
     val lastName: String,
     val middleName: String,
     val shopName: String,
-    val shopPhotoUri: String? = null,
     val addressManual: String? = null,
     val latitude: Double? = null,
     val longitude: Double? = null,
@@ -53,4 +53,22 @@ data class ClientWithDetails(
         entityColumn = "clientId"
     )
     val notes: List<NoteEntity>
+)
+
+@Entity(
+    tableName = "call_logs",
+    indices = [Index(value = ["phoneNumber", "timestamp"], unique = true)]
+)
+data class CallLogEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val phoneNumber: String,
+    val type: Int, // 1 - Incoming, 2 - Outgoing
+    val timestamp: Long,
+    val duration: Int // in seconds
+)
+
+data class PhoneWithStats(
+    val phone: PhoneEntity,
+    val incomingCount: Int,
+    val outgoingCount: Int
 )

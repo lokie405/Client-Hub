@@ -1,13 +1,18 @@
 package com.seryoga.myapplication.ui.screens
 
+import android.Manifest
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.CallReceived
+import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -23,9 +28,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import com.seryoga.myapplication.data.CallLogEntity
 import com.seryoga.myapplication.data.ClientWithDetails
+import com.seryoga.myapplication.data.PhoneWithStats
 import com.seryoga.myapplication.ui.ClientViewModel
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,9 +50,18 @@ fun ClientListScreen(
     val searchQuery by viewModel.searchQuery.collectAsState()
     
     val focusRequester = remember { FocusRequester() }
+    var selectedClientForPhones by remember { mutableStateOf<Long?>(null) }
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
+    }
+
+    if (selectedClientForPhones != null) {
+        PhoneNumbersDialog(
+            clientId = selectedClientForPhones!!,
+            onDismiss = { selectedClientForPhones = null },
+            viewModel = viewModel
+        )
     }
 
     Scaffold(
@@ -74,7 +94,8 @@ fun ClientListScreen(
                 items(clients) { clientWithDetails ->
                     ClientCard(
                         clientWithDetails = clientWithDetails,
-                        onClick = { onClientClick(clientWithDetails.client.id) }
+                        onClick = { onClientClick(clientWithDetails.client.id) },
+                        onCallClick = { selectedClientForPhones = clientWithDetails.client.id }
                     )
                 }
             }
@@ -94,7 +115,8 @@ fun ClientListScreen(
                                 Icon(
                                     Icons.Default.Close,
                                     contentDescription = "Очистити пошук",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant                                )
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                         IconButton(onClick = onAddClientClick) {
@@ -118,10 +140,12 @@ fun ClientListScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ClientCard(
     clientWithDetails: ClientWithDetails,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onCallClick: () -> Unit
 ) {
     val context = LocalContext.current
     val client = clientWithDetails.client
@@ -203,22 +227,13 @@ fun ClientCard(
                     color = MaterialTheme.colorScheme.primaryContainer,
                     tonalElevation = 4.dp
                 ) {
-                    if (clientWithDetails.client.shopPhotoUri != null) {
-                        AsyncImage(
-                            model = clientWithDetails.client.shopPhotoUri,
-                            contentDescription = "Маршрут",
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Storefront,
+                            contentDescription = "Магазин",
+                            modifier = Modifier.size(28.dp),
+                            tint = if (isShopNameFilled) MaterialTheme.colorScheme.primary else Color(0xFF03A9F4)
                         )
-                    } else {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Default.Navigation,
-                                contentDescription = "Маршрут",
-                                modifier = Modifier.size(28.dp),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
                     }
                 }
             }
@@ -268,6 +283,15 @@ fun ClientCard(
                     Spacer(modifier = Modifier.width(4.dp))
                 }
 
+                IconButton(onClick = onCallClick) {
+                    Icon(
+                        Icons.Default.Phone,
+                        contentDescription = "Дзвінок",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
                 IconButton(onClick = {
                     val client = clientWithDetails.client
                     val shareText = buildString {
@@ -280,7 +304,6 @@ fun ClientCard(
                             if (!client.addressManual.isNullOrBlank()) {
                                 appendLine("Адреса: ${client.addressManual}")
                             }
-                            // Using coordinates for precise pin and zoom
                             appendLine("Карта: http://maps.google.com/maps?q=loc:${client.latitude},${client.longitude}&z=20")
                         } else if (!client.addressManual.isNullOrBlank()) {
                             appendLine("Адреса: ${client.addressManual}")
@@ -302,6 +325,152 @@ fun ClientCard(
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(20.dp)
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PhoneNumbersDialog(
+    clientId: Long,
+    onDismiss: () -> Unit,
+    viewModel: ClientViewModel
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var phonesWithStats by remember { mutableStateOf<List<PhoneWithStats>>(emptyList()) }
+    var selectedPhoneForHistory by remember { mutableStateOf<String?>(null) }
+    
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            scope.launch {
+                phonesWithStats = viewModel.getPhonesWithStats(clientId)
+            }
+        }
+    }
+
+    LaunchedEffect(clientId) {
+        val permissionCheck = androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_CALL_LOG
+        )
+        if (permissionCheck == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            phonesWithStats = viewModel.getPhonesWithStats(clientId)
+        } else {
+            permissionLauncher.launch(Manifest.permission.READ_CALL_LOG)
+        }
+    }
+
+    if (selectedPhoneForHistory != null) {
+        CallHistoryDialog(
+            phoneNumber = selectedPhoneForHistory!!,
+            onDismiss = { selectedPhoneForHistory = null },
+            viewModel = viewModel
+        )
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Виберіть номер для дзвінка", style = MaterialTheme.typography.titleLarge)
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                phonesWithStats.forEach { stat ->
+                    Button(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${stat.phone.phoneNumber}"))
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(stat.phone.phoneNumber, modifier = Modifier.weight(1f))
+                            
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.AutoMirrored.Filled.CallReceived, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Text(stat.incomingCount.toString(), style = MaterialTheme.typography.bodySmall)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Icon(Icons.AutoMirrored.Filled.CallMade, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Text(stat.outgoingCount.toString(), style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                    
+                    Text(
+                        "Утримуйте для історії",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = { selectedPhoneForHistory = stat.phone.phoneNumber }
+                        ).padding(bottom = 8.dp)
+                    )
+                }
+                
+                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
+                    Text("Закрити")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CallHistoryDialog(
+    phoneNumber: String,
+    onDismiss: () -> Unit,
+    viewModel: ClientViewModel
+) {
+    val history by viewModel.getCallHistory(phoneNumber).collectAsState()
+    val dateFormat = SimpleDateFormat("dd.MM HH:mm", Locale.getDefault())
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.7f).padding(16.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Історія дзвінків: $phoneNumber", style = MaterialTheme.typography.titleMedium)
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(history) { log ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                if (log.type == 1) Icons.AutoMirrored.Filled.CallReceived else Icons.AutoMirrored.Filled.CallMade,
+                                contentDescription = null,
+                                tint = if (log.type == 1) Color(0xFF4CAF50) else Color(0xFF2196F3),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(dateFormat.format(Date(log.timestamp)), style = MaterialTheme.typography.bodyMedium)
+                                Text("${log.duration} сек.", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        HorizontalDivider(thickness = 0.5.dp)
+                    }
+                }
+                
+                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
+                    Text("Закрити")
                 }
             }
         }

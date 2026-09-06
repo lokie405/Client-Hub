@@ -118,7 +118,7 @@ fun SettingsScreen(
             }
             
             Text(
-                "Імпорт додає клієнтів до існуючого списку. Фото та аудіофайли не переносяться, лише текст та координати.",
+                "Імпорт додає клієнтів до існуючого списку. Автоекспорт працює автоматично при кожному збереженні в папку Documents додатка.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 4.dp)

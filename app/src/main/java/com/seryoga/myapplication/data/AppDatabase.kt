@@ -5,6 +5,7 @@ import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Delete
 import androidx.room.Insert
+import androidx.room.Index
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Room
@@ -50,9 +51,21 @@ interface ClientDao {
 
     @Query("DELETE FROM phones WHERE clientId = :clientId")
     suspend fun deletePhonesForClient(clientId: Long): Unit
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertCallLog(callLog: CallLogEntity)
+
+    @Query("SELECT * FROM call_logs WHERE phoneNumber = :phoneNumber ORDER BY timestamp DESC")
+    fun getCallLogsForPhone(phoneNumber: String): Flow<List<CallLogEntity>>
+
+    @Query("SELECT COUNT(*) FROM call_logs WHERE phoneNumber = :phoneNumber AND type = 1")
+    suspend fun getIncomingCount(phoneNumber: String): Int
+
+    @Query("SELECT COUNT(*) FROM call_logs WHERE phoneNumber = :phoneNumber AND type = 2")
+    suspend fun getOutgoingCount(phoneNumber: String): Int
 }
 
-@Database(entities = [ClientEntity::class, PhoneEntity::class, NoteEntity::class], version = 2)
+@Database(entities = [ClientEntity::class, PhoneEntity::class, NoteEntity::class, CallLogEntity::class], version = 5)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun clientDao(): ClientDao

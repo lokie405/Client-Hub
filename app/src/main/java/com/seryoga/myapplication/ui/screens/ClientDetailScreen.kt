@@ -23,7 +23,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.AddLocationAlt
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Map
@@ -40,7 +39,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
@@ -49,7 +47,6 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil.compose.AsyncImage
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
@@ -77,7 +74,6 @@ fun ClientDetailScreen(
     var lastName by remember { mutableStateOf("") }
     var shopName by remember { mutableStateOf("") }
     var phones by remember { mutableStateOf(listOf("")) }
-    var shopPhotoUri by remember { mutableStateOf<String?>(null) }
     var address by remember { mutableStateOf("") }
     var latitude by remember { mutableStateOf<Double?>(null) }
     var longitude by remember { mutableStateOf<Double?>(null) }
@@ -89,7 +85,6 @@ fun ClientDetailScreen(
     var initialLastName by remember { mutableStateOf("") }
     var initialShopName by remember { mutableStateOf("") }
     var initialPhones by remember { mutableStateOf(listOf("")) }
-    var initialShopPhotoUri by remember { mutableStateOf<String?>(null) }
     var initialAddress by remember { mutableStateOf("") }
     var initialLabel by remember { mutableStateOf("") }
     
@@ -99,7 +94,6 @@ fun ClientDetailScreen(
             lastName != initialLastName ||
             shopName != initialShopName ||
             phones != initialPhones ||
-            shopPhotoUri != initialShopPhotoUri ||
             address != initialAddress ||
             label != initialLabel
         }
@@ -115,7 +109,6 @@ fun ClientDetailScreen(
             middleName = "",
             shopName = shopName,
             phones = phones,
-            shopPhotoUri = shopPhotoUri,
             address = address,
             lat = latitude,
             lon = longitude,
@@ -144,32 +137,12 @@ fun ClientDetailScreen(
     var showMapPicker by remember { mutableStateOf(false) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var clientToDelete by remember { mutableStateOf<ClientWithDetails?>(null) }
-    var showPhotoFullScreen by remember { mutableStateOf(false) }
     
     val lastNameFocusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
 
     LaunchedEffect(Unit) {
         if (clientId == null) {
             lastNameFocusRequester.requestFocus()
-        }
-    }
-
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri != null) {
-            shopPhotoUri = uri.toString()
-            showPhotoFullScreen = false
-        }
-    }
-
-    var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
-    val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture()
-    ) { success ->
-        if (success && cameraTempUri != null) {
-            shopPhotoUri = cameraTempUri.toString()
-            showPhotoFullScreen = false
         }
     }
 
@@ -283,19 +256,6 @@ fun ClientDetailScreen(
         )
     }
 
-    if (showPhotoFullScreen && shopPhotoUri != null) {
-        FullScreenPhotoDialog(
-            photoUri = shopPhotoUri!!,
-            onDismiss = { showPhotoFullScreen = false },
-            onChange = { photoPickerLauncher.launch("image/*") },
-            onCamera = {
-                val uri = viewModel.getPhotoUri()
-                cameraTempUri = uri
-                cameraLauncher.launch(uri)
-            }
-        )
-    }
-
     LaunchedEffect(clientId) {
         if (clientId != null) {
             val details = viewModel.getClient(clientId)
@@ -305,7 +265,6 @@ fun ClientDetailScreen(
                 lastName = it.client.lastName
                 shopName = it.client.shopName
                 phones = it.phones.map { p -> p.phoneNumber }.ifEmpty { listOf("") }
-                shopPhotoUri = it.client.shopPhotoUri
                 address = it.client.addressManual ?: ""
                 latitude = it.client.latitude
                 longitude = it.client.longitude
@@ -316,7 +275,6 @@ fun ClientDetailScreen(
                 initialLastName = lastName
                 initialShopName = shopName
                 initialPhones = phones
-                initialShopPhotoUri = shopPhotoUri
                 initialAddress = address
                 initialLabel = label
             }
@@ -359,40 +317,6 @@ fun ClientDetailScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(200.dp)
-                    .clickable { 
-                        if (shopPhotoUri != null) {
-                            showPhotoFullScreen = true
-                        } else {
-                            photoPickerLauncher.launch("image/*")
-                        }
-                    },
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                if (shopPhotoUri != null) {
-                    AsyncImage(
-                        model = shopPhotoUri,
-                        contentDescription = "Фото магазину",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit
-                    )
-                } else {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Default.CameraAlt,
-                                contentDescription = null,
-                                modifier = Modifier.size(48.dp)
-                            )
-                            Text("Додати фото магазину")
-                        }
-                    }
-                }
-            }
-
             OutlinedTextField(
                 value = lastName,
                 onValueChange = { lastName = it },
@@ -456,7 +380,6 @@ fun ClientDetailScreen(
                             if (address.isNotBlank()) {
                                 val pinLabel = "$shopName, $lastName $firstName ($label)"
                                 
-                                // Copy to clipboard
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 val clip = ClipData.newPlainText("Client Info", pinLabel)
                                 clipboard.setPrimaryClip(clip)
@@ -465,7 +388,6 @@ fun ClientDetailScreen(
                                     snackbarHostState.showSnackbar("Інформацію скопійовано")
                                 }
 
-                                // Open Google Maps with high zoom
                                 val gmmIntentUri = if (latitude != null && longitude != null) {
                                     Uri.parse("geo:0,0?q=${latitude},${longitude}(${Uri.encode(pinLabel)})&z=20")
                                 } else {
@@ -546,64 +468,6 @@ fun ClientDetailScreen(
                 },
                 modifier = Modifier.fillMaxWidth()
             )
-        }
-    }
-}
-
-@Composable
-fun FullScreenPhotoDialog(
-    photoUri: String,
-    onDismiss: () -> Unit,
-    onChange: () -> Unit,
-    onCamera: () -> Unit
-) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = Color.Black
-        ) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                AsyncImage(
-                    model = photoUri,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Fit
-                )
-                
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.BottomCenter)
-                        .padding(24.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)
-                    ) {
-                        Text("Назад")
-                    }
-                    Button(
-                        onClick = onChange,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Змінити")
-                    }
-                    Button(
-                        onClick = onCamera,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.CameraAlt, contentDescription = null)
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Камера")
-                    }
-                }
-            }
         }
     }
 }
