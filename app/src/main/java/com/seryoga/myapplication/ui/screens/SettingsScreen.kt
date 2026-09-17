@@ -118,7 +118,7 @@ fun SettingsScreen(
             }
             
             Text(
-                "Імпорт додає клієнтів до існуючого списку. Автоекспорт працює автоматично при кожному збереженні в папку Documents додатка.",
+                "Імпорт додає клієнтів до існуючого списку. Автоекспорт працює автоматично при кожному збереженні в папку Download/Polisan DB.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 4.dp)

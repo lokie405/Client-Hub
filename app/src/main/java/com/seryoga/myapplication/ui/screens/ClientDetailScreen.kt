@@ -70,9 +70,9 @@ fun ClientDetailScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     
-    var firstName by remember { mutableStateOf("") }
-    var lastName by remember { mutableStateOf("") }
+    var fullName by remember { mutableStateOf("") }
     var shopName by remember { mutableStateOf("") }
+    var city by remember { mutableStateOf("") }
     var phones by remember { mutableStateOf(listOf("")) }
     var address by remember { mutableStateOf("") }
     var latitude by remember { mutableStateOf<Double?>(null) }
@@ -81,18 +81,18 @@ fun ClientDetailScreen(
     var newNoteText by remember { mutableStateOf("") }
     
     // Initial values to detect changes
-    var initialFirstName by remember { mutableStateOf("") }
-    var initialLastName by remember { mutableStateOf("") }
+    var initialFullName by remember { mutableStateOf("") }
     var initialShopName by remember { mutableStateOf("") }
+    var initialCity by remember { mutableStateOf("") }
     var initialPhones by remember { mutableStateOf(listOf("")) }
     var initialAddress by remember { mutableStateOf("") }
     var initialLabel by remember { mutableStateOf("") }
     
     val hasChanges by remember {
         derivedStateOf {
-            firstName != initialFirstName ||
-            lastName != initialLastName ||
+            fullName != initialFullName ||
             shopName != initialShopName ||
+            city != initialCity ||
             phones != initialPhones ||
             address != initialAddress ||
             label != initialLabel
@@ -104,10 +104,10 @@ fun ClientDetailScreen(
     val performSave = {
         viewModel.addClient(
             id = clientId,
-            firstName = firstName,
-            lastName = lastName,
+            fullName = fullName,
             middleName = "",
             shopName = shopName,
+            city = city,
             phones = phones,
             address = address,
             lat = latitude,
@@ -130,6 +130,7 @@ fun ClientDetailScreen(
     }
     
     var showAddressOverwriteDialog by remember { mutableStateOf(false) }
+    var pendingCity by remember { mutableStateOf("") }
     var pendingAddress by remember { mutableStateOf("") }
     var pendingLat by remember { mutableStateOf<Double?>(null) }
     var pendingLon by remember { mutableStateOf<Double?>(null) }
@@ -152,14 +153,16 @@ fun ClientDetailScreen(
         if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         ) {
-            viewModel.getCurrentLocationAddress { addr, lat, lon ->
-                addr?.let {
-                    if (address.isBlank()) {
-                        address = it
+            viewModel.getCurrentLocationAddress { cityVal, addr, lat, lon ->
+                if (!addr.isNullOrBlank() || !cityVal.isNullOrBlank()) {
+                    if (address.isBlank() && city.isBlank()) {
+                        city = cityVal ?: ""
+                        address = addr ?: ""
                         latitude = lat
                         longitude = lon
                     } else {
-                        pendingAddress = it
+                        pendingCity = cityVal ?: ""
+                        pendingAddress = addr ?: ""
                         pendingLat = lat
                         pendingLon = lon
                         showAddressOverwriteDialog = true
@@ -176,6 +179,7 @@ fun ClientDetailScreen(
             text = { Text("Поле адреси вже містить дані. Ви бажаєте перезаписати їх на поточну адресу?") },
             confirmButton = {
                 TextButton(onClick = {
+                    city = pendingCity
                     address = pendingAddress
                     latitude = pendingLat
                     longitude = pendingLon
@@ -212,14 +216,17 @@ fun ClientDetailScreen(
 
     if (showMapPicker) {
         MapPickerDialog(
+            initialCity = city,
             initialAddress = address,
             onDismiss = { showMapPicker = false },
-            onAddressSelected = { selectedAddress, lat, lon ->
-                if (address.isBlank()) {
+            onAddressSelected = { selectedCity, selectedAddress, lat, lon ->
+                if (address.isBlank() && city.isBlank()) {
+                    city = selectedCity
                     address = selectedAddress
                     latitude = lat
                     longitude = lon
                 } else {
+                    pendingCity = selectedCity
                     pendingAddress = selectedAddress
                     pendingLat = lat
                     pendingLon = lon
@@ -261,9 +268,9 @@ fun ClientDetailScreen(
             val details = viewModel.getClient(clientId)
             details?.let {
                 clientToDelete = it
-                firstName = it.client.firstName
-                lastName = it.client.lastName
+                fullName = it.client.fullName
                 shopName = it.client.shopName
+                city = it.client.city ?: ""
                 phones = it.phones.map { p -> p.phoneNumber }.ifEmpty { listOf("") }
                 address = it.client.addressManual ?: ""
                 latitude = it.client.latitude
@@ -271,9 +278,9 @@ fun ClientDetailScreen(
                 label = it.client.label ?: ""
                 
                 // Set initial values
-                initialFirstName = firstName
-                initialLastName = lastName
+                initialFullName = fullName
                 initialShopName = shopName
+                initialCity = city
                 initialPhones = phones
                 initialAddress = address
                 initialLabel = label
@@ -318,9 +325,9 @@ fun ClientDetailScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             OutlinedTextField(
-                value = lastName,
-                onValueChange = { lastName = it },
-                label = { Text("Прізвище") },
+                value = fullName,
+                onValueChange = { fullName = it },
+                label = { Text("Ім'я та прізвище") },
                 leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
                 keyboardOptions = KeyboardOptions(
                     capitalization = KeyboardCapitalization.Words,
@@ -332,24 +339,25 @@ fun ClientDetailScreen(
                     .focusRequester(lastNameFocusRequester)
             )
             OutlinedTextField(
-                value = firstName,
-                onValueChange = { firstName = it },
-                label = { Text("Ім'я") },
-                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.Words,
-                    imeAction = ImeAction.Next
-                ),
-                keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }),
-                modifier = Modifier.fillMaxWidth()
-            )
-            OutlinedTextField(
                 value = shopName,
                 onValueChange = { shopName = it.replaceFirstChar { char -> char.uppercase() } },
                 label = { Text("Назва магазину") },
                 leadingIcon = { Icon(Icons.Default.Storefront, contentDescription = null) },
                 keyboardOptions = KeyboardOptions(
                     capitalization = KeyboardCapitalization.Sentences,
+                    imeAction = ImeAction.Next
+                ),
+                keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+                value = city,
+                onValueChange = { city = it.replaceFirstChar { char -> char.uppercase() } },
+                label = { Text("Населений пункт") },
+                leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = null) },
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Words,
                     imeAction = ImeAction.Next
                 ),
                 keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }),
@@ -378,7 +386,7 @@ fun ClientDetailScreen(
                     Row {
                         IconButton(onClick = {
                             if (address.isNotBlank()) {
-                                val pinLabel = "$shopName, $lastName $firstName ($label)"
+                                val pinLabel = "$shopName, $fullName ($label)"
                                 
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 val clip = ClipData.newPlainText("Client Info", pinLabel)
@@ -474,9 +482,10 @@ fun ClientDetailScreen(
 
 @Composable
 fun MapPickerDialog(
+    initialCity: String,
     initialAddress: String,
     onDismiss: () -> Unit,
-    onAddressSelected: (String, Double, Double) -> Unit,
+    onAddressSelected: (String, String, Double, Double) -> Unit,
     viewModel: ClientViewModel
 ) {
     val context = LocalContext.current
@@ -486,14 +495,16 @@ fun MapPickerDialog(
         position = CameraPosition.fromLatLngZoom(kyiv, 19f)
     }
     
-    var currentAddress by remember { mutableStateOf("Завантаження...") }
+    var currentCity by remember { mutableStateOf("") }
+    var currentStreet by remember { mutableStateOf("Завантаження...") }
 
     // Center map on initial address if provided
-    LaunchedEffect(initialAddress) {
-        if (initialAddress.isNotBlank()) {
+    LaunchedEffect(initialCity, initialAddress) {
+        val fullAddr = listOf(initialCity, initialAddress).filter { it.isNotBlank() }.joinToString(", ")
+        if (fullAddr.isNotBlank()) {
             try {
                 val geocoder = Geocoder(context, Locale.getDefault())
-                val addresses = geocoder.getFromLocationName(initialAddress, 1)
+                val addresses = geocoder.getFromLocationName(fullAddr, 1)
                 if (!addresses.isNullOrEmpty()) {
                     val addr = addresses[0]
                     cameraPositionState.position = CameraPosition.fromLatLngZoom(
@@ -508,8 +519,9 @@ fun MapPickerDialog(
     LaunchedEffect(cameraPositionState.isMoving) {
         if (!cameraPositionState.isMoving) {
             val center = cameraPositionState.position.target
-            viewModel.getAddressFromLocation(center.latitude, center.longitude) { addr ->
-                currentAddress = addr ?: "Не вдалося визначити адресу"
+            viewModel.getAddressFromLocation(center.latitude, center.longitude) { cityVal, street ->
+                currentCity = cityVal ?: ""
+                currentStreet = street ?: "Не вдалося визначити адресу"
             }
         }
     }
@@ -593,7 +605,7 @@ fun MapPickerDialog(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = currentAddress,
+                            text = if (currentCity.isNotBlank()) "$currentCity, $currentStreet" else currentStreet,
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(bottom = 16.dp)
@@ -611,10 +623,10 @@ fun MapPickerDialog(
                             Button(
                                 onClick = { 
                                     val target = cameraPositionState.position.target
-                                    onAddressSelected(currentAddress, target.latitude, target.longitude) 
+                                    onAddressSelected(currentCity, currentStreet, target.latitude, target.longitude) 
                                 },
                                 modifier = Modifier.weight(1f),
-                                enabled = currentAddress != "Завантаження..." && currentAddress != "Не вдалося визначити адресу"
+                                enabled = currentStreet != "Завантаження..." && currentStreet != "Не вдалося визначити адресу"
                             ) {
                                 Text("Вибрати")
                             }

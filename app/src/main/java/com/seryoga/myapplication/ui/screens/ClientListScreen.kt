@@ -1,9 +1,16 @@
 package com.seryoga.myapplication.ui.screens
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.speech.RecognizerIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -52,6 +59,32 @@ fun ClientListScreen(
     val focusRequester = remember { FocusRequester() }
     var selectedClientForPhones by remember { mutableStateOf<Long?>(null) }
 
+    val labelCounts = remember(clients) {
+        clients.groupingBy { it.client.label }.eachCount()
+    }
+
+    val voiceSearchLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val spokenText = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.get(0)
+            spokenText?.let { viewModel.updateSearchQuery(it) }
+        }
+    }
+
+    val startVoiceSearch = {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Говоріть...")
+        }
+        try {
+            voiceSearchLauncher.launch(intent)
+        } catch (_: Exception) {
+            // Handle case where voice search is not available
+        }
+    }
+
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
     }
@@ -95,7 +128,9 @@ fun ClientListScreen(
                     ClientCard(
                         clientWithDetails = clientWithDetails,
                         onClick = { onClientClick(clientWithDetails.client.id) },
-                        onCallClick = { selectedClientForPhones = clientWithDetails.client.id }
+                        onCallClick = { selectedClientForPhones = clientWithDetails.client.id },
+                        labelCounts = labelCounts,
+                        onClone = { viewModel.cloneClient(clientWithDetails) }
                     )
                 }
             }
@@ -107,7 +142,18 @@ fun ClientListScreen(
                 active = false,
                 onActiveChange = {},
                 placeholder = { Text("Пошук...") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                leadingIcon = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onAddClientClick) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "Додати клієнта",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Icon(Icons.Default.Search, contentDescription = null)
+                    }
+                },
                 trailingIcon = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (searchQuery.isNotEmpty()) {
@@ -119,12 +165,12 @@ fun ClientListScreen(
                                 )
                             }
                         }
-                        IconButton(onClick = onAddClientClick) {
+                        IconButton(onClick = startVoiceSearch) {
                             Icon(
-                                Icons.Default.Add,
-                                contentDescription = "Додати клієнта",
+                                Icons.Default.Mic,
+                                contentDescription = "Голосовий пошук",
                                 tint = MaterialTheme.colorScheme.primary
-                              )
+                            )
                         }
                     }
                 },
@@ -145,7 +191,9 @@ fun ClientListScreen(
 fun ClientCard(
     clientWithDetails: ClientWithDetails,
     onClick: () -> Unit,
-    onCallClick: () -> Unit
+    onCallClick: () -> Unit,
+    labelCounts: Map<String?, Int>,
+    onClone: () -> Unit
 ) {
     val context = LocalContext.current
     val client = clientWithDetails.client
@@ -155,177 +203,232 @@ fun ClientCard(
     val isAddressFilled = !client.addressManual.isNullOrBlank()
     val isLabelFilled = !client.label.isNullOrBlank()
     val isShopNameFilled = client.shopName.isNotBlank()
-    val isNamesFilled = client.firstName.isNotBlank() && client.lastName.isNotBlank()
+    val isNamesFilled = client.fullName.isNotBlank()
     
     val isAllFilled = isPhoneFilled && isAddressFilled && isLabelFilled && isNamesFilled && isShopNameFilled
+
+    val isHighlighted = client.label != null && client.label != "D" && (labelCounts[client.label] ?: 0) > 1
+    
+    var showMenu by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { showMenu = true }
+            ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                showMenu -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                isHighlighted -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f)
+                else -> MaterialTheme.colorScheme.surface
+            }
+        )
     ) {
-        Row(
-            modifier = Modifier
-                .padding(12.dp)
-                .fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                // Indicators Row
-                Row(
-                    modifier = Modifier.padding(bottom = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    if (isAllFilled) {
-                        Icon(
-                            Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp),
-                            tint = Color(0xFF4CAF50)
-                        )
-                    } else {
-                        if (!isPhoneFilled) Icon(
-                            Icons.Default.Phone,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp),
-                            tint = Color(0xFFFFB300)
-                        )
-                        if (!isAddressFilled) Icon(
-                            Icons.Default.LocationOn,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp),
-                            tint = Color(0xFFF44336)
-                        )
-                        if (!isLabelFilled) Icon(
-                            Icons.AutoMirrored.Filled.Label,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp),
-                            tint = Color(0xFF9C27B0)
-                        )
-                        if (!isShopNameFilled) Icon(
-                            Icons.Default.Storefront,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp),
-                            tint = Color(0xFF03A9F4)
-                        )
-                    }
-                }
-
-                Surface(
-                    onClick = {
-                        val address = clientWithDetails.client.addressManual
-                        if (!address.isNullOrBlank()) {
-                            val gmmIntentUri = Uri.parse("https://www.google.com/maps/dir/?api=1&destination=${Uri.encode(address)}")
-                            val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
-                            mapIntent.setPackage("com.google.android.apps.maps")
-                            context.startActivity(mapIntent)
-                        }
-                    },
-                    modifier = Modifier.size(50.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    tonalElevation = 4.dp
-                ) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Default.Storefront,
-                            contentDescription = "Магазин",
-                            modifier = Modifier.size(28.dp),
-                            tint = if (isShopNameFilled) MaterialTheme.colorScheme.primary else Color(0xFF03A9F4)
-                        )
-                    }
-                }
-            }
-            
-            Spacer(modifier = Modifier.width(12.dp))
-            
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "${clientWithDetails.client.lastName} ${clientWithDetails.client.firstName}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = clientWithDetails.client.shopName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.secondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (!clientWithDetails.client.addressManual.isNullOrBlank()) {
-                    Text(
-                        text = clientWithDetails.client.addressManual,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        minLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        lineHeight = androidx.compose.ui.unit.TextUnit.Unspecified
-                    )
-                }
-            }
-            
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (!clientWithDetails.client.label.isNullOrBlank()) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.tertiaryContainer,
-                        shape = MaterialTheme.shapes.small
+        Box {
+            Row(
+                modifier = Modifier
+                    .padding(12.dp)
+                    .fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // Indicators Row
+                    Row(
+                        modifier = Modifier.padding(bottom = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
+                        if (isAllFilled) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = Color(0xFF4CAF50)
+                            )
+                        } else {
+                            if (!isPhoneFilled) Icon(
+                                Icons.Default.Phone,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = Color(0xFFFFB300)
+                            )
+                            if (!isAddressFilled) Icon(
+                                Icons.Default.LocationOn,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = Color(0xFFF44336)
+                            )
+                            if (!isLabelFilled) Icon(
+                                Icons.AutoMirrored.Filled.Label,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = Color(0xFF9C27B0)
+                            )
+                            if (!isShopNameFilled) Icon(
+                                Icons.Default.Storefront,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = Color(0xFF03A9F4)
+                            )
+                        }
+                    }
+
+                    Surface(
+                        onClick = {
+                            val address = clientWithDetails.client.addressManual
+                            if (!address.isNullOrBlank()) {
+                                val gmmIntentUri = Uri.parse("https://www.google.com/maps/dir/?api=1&destination=${Uri.encode(address)}")
+                                val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
+                                mapIntent.setPackage("com.google.android.apps.maps")
+                                context.startActivity(mapIntent)
+                            }
+                        },
+                        modifier = Modifier.size(50.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        tonalElevation = 4.dp
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.Storefront,
+                                contentDescription = "Магазин",
+                                modifier = Modifier.size(28.dp),
+                                tint = if (isShopNameFilled) MaterialTheme.colorScheme.primary else Color(0xFF03A9F4)
+                            )
+                        }
+                    }
+                }
+                
+                Spacer(modifier = Modifier.width(12.dp))
+                
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = clientWithDetails.client.fullName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = clientWithDetails.client.shopName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.secondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (!clientWithDetails.client.addressManual.isNullOrBlank()) {
                         Text(
-                            text = clientWithDetails.client.label,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                            text = clientWithDetails.client.addressManual,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            minLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            lineHeight = androidx.compose.ui.unit.TextUnit.Unspecified
                         )
                     }
-                    Spacer(modifier = Modifier.width(4.dp))
                 }
-
-                IconButton(onClick = onCallClick) {
-                    Icon(
-                        Icons.Default.Phone,
-                        contentDescription = "Дзвінок",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                IconButton(onClick = {
-                    val client = clientWithDetails.client
-                    val shareText = buildString {
-                        appendLine("Магазин: ${client.shopName}")
-                        appendLine("Клієнт: ${client.lastName} ${client.firstName}")
-                        if (!client.label.isNullOrBlank()) {
-                            appendLine("Мітка: ${client.label}")
-                        }
-                        if (client.latitude != null && client.longitude != null) {
-                            if (!client.addressManual.isNullOrBlank()) {
-                                appendLine("Адреса: ${client.addressManual}")
+                
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    if (!client.city.isNullOrBlank()) {
+                        Text(
+                            text = client.city,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 4.dp, end = 8.dp)
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (!clientWithDetails.client.label.isNullOrBlank()) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                                shape = MaterialTheme.shapes.small
+                            ) {
+                                Text(
+                                    text = clientWithDetails.client.label,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
                             }
-                            appendLine("Карта: http://maps.google.com/maps?q=loc:${client.latitude},${client.longitude}&z=20")
-                        } else if (!client.addressManual.isNullOrBlank()) {
-                            appendLine("Адреса: ${client.addressManual}")
-                            appendLine("Карта: http://maps.google.com/maps?q=${Uri.encode(client.addressManual)}&z=20")
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+
+                        IconButton(onClick = onCallClick) {
+                            Icon(
+                                Icons.Default.Phone,
+                                contentDescription = "Дзвінок",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                     }
-                    
-                    val sendIntent: Intent = Intent().apply {
-                        action = Intent.ACTION_SEND
-                        putExtra(Intent.EXTRA_TEXT, shareText)
-                        type = "text/plain"
-                    }
-                    val shareIntent = Intent.createChooser(sendIntent, null)
-                    context.startActivity(shareIntent)
-                }) {
-                    Icon(
-                        Icons.Default.Share,
-                        contentDescription = "Поділитись",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
                 }
+            }
+
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Поділитись") },
+                    onClick = {
+                        showMenu = false
+                        val client = clientWithDetails.client
+                        val shareText = buildString {
+                            appendLine("Магазин: ${client.shopName}")
+                            if (!client.city.isNullOrBlank()) {
+                                appendLine("Населений пункт: ${client.city}")
+                            }
+                            appendLine("Клієнт: ${client.fullName}")
+                            if (!client.label.isNullOrBlank()) {
+                                appendLine("Мітка: ${client.label}")
+                            }
+                            val fullAddress = listOfNotNull(client.city, client.addressManual).joinToString(", ")
+                            if (client.latitude != null && client.longitude != null) {
+                                if (fullAddress.isNotBlank()) {
+                                    appendLine("Адреса: $fullAddress")
+                                }
+                                appendLine("Карта: http://maps.google.com/maps?q=loc:${client.latitude},${client.longitude}&z=20")
+                            } else if (fullAddress.isNotBlank()) {
+                                appendLine("Адреса: $fullAddress")
+                                appendLine("Карта: http://maps.google.com/maps?q=${Uri.encode(fullAddress)}&z=20")
+                            }
+                        }
+                        
+                        val sendIntent: Intent = Intent().apply {
+                            action = Intent.ACTION_SEND
+                            putExtra(Intent.EXTRA_TEXT, shareText)
+                            type = "text/plain"
+                        }
+                        val shareIntent = Intent.createChooser(sendIntent, null)
+                        context.startActivity(shareIntent)
+                    },
+                    leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) }
+                )
+                DropdownMenuItem(
+                    text = { Text("Копіювати") },
+                    onClick = {
+                        showMenu = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = ClipData.newPlainText("Client Name", client.fullName)
+                        clipboard.setPrimaryClip(clip)
+                    },
+                    leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) }
+                )
+                DropdownMenuItem(
+                    text = { Text("Клонувати") },
+                    onClick = {
+                        showMenu = false
+                        onClone()
+                    },
+                    leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = "Клонувати") }
+                )
             }
         }
     }

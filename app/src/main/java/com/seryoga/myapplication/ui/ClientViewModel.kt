@@ -129,10 +129,10 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
 
     fun addClient(
         id: Long? = null,
-        firstName: String,
-        lastName: String,
+        fullName: String,
         middleName: String,
         shopName: String,
+        city: String? = null,
         phones: List<String>,
         address: String? = null,
         lat: Double? = null,
@@ -143,10 +143,10 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
             val clientId = clientDao.insertClient(
                 ClientEntity(
                     id = id ?: 0,
-                    firstName = firstName,
-                    lastName = lastName,
+                    fullName = fullName,
                     middleName = middleName,
                     shopName = shopName,
+                    city = city,
                     addressManual = address,
                     latitude = lat,
                     longitude = lon,
@@ -172,14 +172,29 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
         try {
             val allClients = clientDao.getAllClients().first()
             val recordCount = allClients.size
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            val fileName = "costumer_${timestamp}_$recordCount.json"
+            val timestamp = SimpleDateFormat("ddMMyyyy_HHmmss", Locale.getDefault()).format(Date())
+            val fileName = "clients_db_${recordCount}_$timestamp.json"
             
             val json = gson.toJson(allClients)
             
             withContext(Dispatchers.IO) {
-                val directory = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-                if (directory != null) {
+                val context = getApplication<Application>()
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    val resolver = context.contentResolver
+                    val contentValues = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/json")
+                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + File.separator + "Polisan DB")
+                    }
+
+                    val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                    uri?.let {
+                        resolver.openOutputStream(it)?.use { outputStream ->
+                            outputStream.write(json.toByteArray())
+                        }
+                    }
+                } else {
+                    val directory = File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "Polisan DB")
                     if (!directory.exists()) directory.mkdirs()
                     val file = File(directory, fileName)
                     FileOutputStream(file).use {
@@ -204,6 +219,23 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             clientDao.deleteClient(clientWithDetails.client)
             clientDao.deletePhonesForClient(clientWithDetails.client.id)
+            autoExportData()
+        }
+    }
+
+    fun cloneClient(clientWithDetails: ClientWithDetails) {
+        viewModelScope.launch {
+            val oldClient = clientWithDetails.client
+            val newClientId = clientDao.insertClient(
+                oldClient.copy(id = 0)
+            )
+            clientWithDetails.phones.forEach { phone ->
+                clientDao.insertPhone(phone.copy(id = 0, clientId = newClientId))
+            }
+            clientWithDetails.notes.forEach { note ->
+                clientDao.insertNote(note.copy(id = 0, clientId = newClientId))
+            }
+            autoExportData()
         }
     }
 
@@ -257,7 +289,7 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     @SuppressLint("MissingPermission")
-    fun getCurrentLocationAddress(onResult: (String?, Double?, Double?) -> Unit) {
+    fun getCurrentLocationAddress(onResult: (String?, String?, Double?, Double?) -> Unit) {
         viewModelScope.launch {
             try {
                 val location = withContext(Dispatchers.IO) {
@@ -269,33 +301,34 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                 }
 
                 location?.let {
-                    getAddressFromLocation(it.latitude, it.longitude) { addr ->
-                        onResult(addr, it.latitude, it.longitude)
+                    getAddressFromLocation(it.latitude, it.longitude) { cityVal, street ->
+                        onResult(cityVal, street, it.latitude, it.longitude)
                     }
-                } ?: onResult(null, null, null)
+                } ?: onResult(null, null, null, null)
             } catch (e: Exception) {
-                onResult(null, null, null)
+                onResult(null, null, null, null)
             }
         }
     }
 
-    fun getAddressFromLocation(latitude: Double, longitude: Double, onResult: (String?) -> Unit) {
+    fun getAddressFromLocation(latitude: Double, longitude: Double, onResult: (String?, String?) -> Unit) {
         viewModelScope.launch {
             try {
-                val addressStr = withContext(Dispatchers.IO) {
+                val addressData = withContext(Dispatchers.IO) {
                     val geocoder = Geocoder(getApplication(), Locale.getDefault())
                     val addresses = geocoder.getFromLocation(latitude, longitude, 1)
                     if (!addresses.isNullOrEmpty()) {
                         val addr = addresses[0]
-                        val city = addr.locality ?: ""
+                        val city = addr.locality ?: addr.subAdminArea ?: ""
                         val street = addr.thoroughfare ?: ""
                         val house = addr.subThoroughfare ?: ""
-                        listOf(city, street, house).filter { it.isNotBlank() }.joinToString(", ")
-                    } else null
+                        val fullStreet = listOf(street, house).filter { it.isNotBlank() }.joinToString(", ")
+                        city to fullStreet
+                    } else null to null
                 }
-                onResult(addressStr)
+                onResult(addressData.first, addressData.second)
             } catch (e: Exception) {
-                onResult(null)
+                onResult(null, null)
             }
         }
     }

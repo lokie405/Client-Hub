@@ -9,10 +9,10 @@ import androidx.room.Relation
 @Entity(tableName = "clients")
 data class ClientEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val firstName: String,
-    val lastName: String,
+    val fullName: String,
     val middleName: String,
     val shopName: String,
+    val city: String? = null,
     val addressManual: String? = null,
     val latitude: Double? = null,
     val longitude: Double? = null,
