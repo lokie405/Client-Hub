@@ -32,12 +32,16 @@ interface ClientDao {
     fun getAllClients(): Flow<List<ClientWithDetails>>
 
     @Transaction
-    @Query("SELECT * FROM clients WHERE fullName LIKE :query OR shopName LIKE :query OR city LIKE :query")
-    fun searchClients(query: String): Flow<List<ClientWithDetails>>
+    @Query("SELECT * FROM clients")
+    fun searchClientsRaw(): Flow<List<ClientWithDetails>>
 
     @Transaction
     @Query("SELECT * FROM clients WHERE id = :id")
     suspend fun getClientById(id: Long): ClientWithDetails?
+
+    @Transaction
+    @Query("SELECT * FROM clients WHERE label = :label")
+    suspend fun getClientByLabel(label: String): ClientWithDetails?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertClient(client: ClientEntity): Long

@@ -39,6 +39,16 @@ import java.io.InputStreamReader
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import org.apache.poi.ss.usermodel.*
+
+import kotlinx.coroutines.flow.map
+
+data class ImportResult(
+    val success: Boolean,
+    val message: String,
+    val added: List<String> = emptyList(),
+    val updated: List<String> = emptyList()
+)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ClientViewModel(application: Application) : AndroidViewModel(application) {
@@ -51,10 +61,20 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
 
     val clients: StateFlow<List<ClientWithDetails>> = _searchQuery
         .flatMapLatest { query ->
-            if (query.isEmpty()) {
-                clientDao.getAllClients()
-            } else {
-                clientDao.searchClients("%$query%")
+            clientDao.getAllClients().map { list ->
+                if (query.isBlank()) {
+                    list
+                } else {
+                    val words = query.lowercase().split(" ").filter { it.isNotBlank() }
+                    list.filter { client ->
+                        words.all { word ->
+                            client.client.fullName.lowercase().contains(word) ||
+                            client.client.shopName.lowercase().contains(word) ||
+                            (client.client.city?.lowercase()?.contains(word) ?: false) ||
+                            (client.client.label?.lowercase()?.contains(word) ?: false)
+                        }
+                    }
+                }
             }
         }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -220,6 +240,189 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
             clientDao.deleteClient(clientWithDetails.client)
             clientDao.deletePhonesForClient(clientWithDetails.client.id)
             autoExportData()
+        }
+    }
+
+    fun importRouteSheet(uri: Uri, onResult: (ImportResult) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val context = getApplication<Application>()
+                val inputStream = context.contentResolver.openInputStream(uri)
+                if (inputStream == null) {
+                    onResult(ImportResult(false, "Не вдалося відкрити файл"))
+                    return@launch
+                }
+
+                withContext(Dispatchers.IO) {
+                    val workbook = WorkbookFactory.create(inputStream)
+                    val sheet = workbook.getSheetAt(0)
+                    val formatter = DataFormatter()
+
+                    // 1. Check for "Маршрутний лист" in first 7 rows
+                    var isRouteSheet = false
+                    for (i in 0 until minOf(7, sheet.physicalNumberOfRows)) {
+                        val row = sheet.getRow(i) ?: continue
+                        for (j in 0 until row.lastCellNum.toInt()) {
+                            val cellValue = formatter.formatCellValue(row.getCell(j))
+                            if (cellValue.contains("Маршрутний лист", ignoreCase = true)) {
+                                isRouteSheet = true
+                                break
+                            }
+                        }
+                        if (isRouteSheet) break
+                    }
+
+                    if (!isRouteSheet) {
+                        withContext(Dispatchers.Main) {
+                            onResult(ImportResult(false, "Файл не є маршрутним листом"))
+                        }
+                        return@withContext
+                    }
+
+                    // 2. Find header row and indices
+                    var headerRowIndex = -1
+                    val requiredHeaders = listOf("№ з/п", "№ заявки", "Населений пункт", "Найменування ТРТ", "Клієнт", "Адреса", "Примітка", "Телефон", "Разом")
+                    val headerIndices = mutableMapOf<String, Int>()
+
+                    for (i in 0 until minOf(20, sheet.physicalNumberOfRows)) {
+                        val row = sheet.getRow(i) ?: continue
+                        var foundCount = 0
+                        for (j in 0 until row.lastCellNum.toInt()) {
+                            val cellValue = formatter.formatCellValue(row.getCell(j)).trim()
+                            if (requiredHeaders.any { it.equals(cellValue, ignoreCase = true) }) {
+                                headerIndices[cellValue.lowercase()] = j
+                                foundCount++
+                            }
+                        }
+                        if (foundCount >= 5) {
+                            headerRowIndex = i
+                            break
+                        }
+                    }
+
+                    if (headerRowIndex == -1) {
+                        withContext(Dispatchers.Main) {
+                            onResult(ImportResult(false, "Не знайдено стовпці в таблиці"))
+                        }
+                        return@withContext
+                    }
+
+                    fun getIdx(name: String) = headerIndices[name.lowercase()] ?: -1
+
+                    val cityIdx = getIdx("Населений пункт")
+                    val shopIdx = getIdx("Найменування ТРТ")
+                    val clientIdx = getIdx("Клієнт")
+                    val noteIdx = getIdx("Примітка")
+                    val phoneIdx = getIdx("Телефон")
+
+                    val labelRegex = Regex("""([A-ZА-ЯҐЄІЇ][0-9]{1,3})|([0-9]{1,3}[A-ZА-ЯҐЄІЇ])""")
+                    // Sets to keep track of labels processed in THIS import session
+                    val labelsAdded = mutableSetOf<String>()
+                    val labelsUpdated = mutableSetOf<String>()
+                    
+                    // Map to store display info for the report
+                    val labelToDisplayInfo = mutableMapOf<String, String>()
+
+                    // 3. Process rows
+                    for (i in (headerRowIndex + 1) until sheet.physicalNumberOfRows) {
+                        val row = sheet.getRow(i) ?: continue
+                        
+                        val firstCellText = formatter.formatCellValue(row.getCell(0)).trim()
+                        if (firstCellText.contains("Вага", ignoreCase = true) || firstCellText.contains("Брутто", ignoreCase = true)) continue
+
+                        val noteCellValue = formatter.formatCellValue(row.getCell(noteIdx)).trim()
+                        if (noteCellValue.isBlank()) continue
+
+                        val match = labelRegex.find(noteCellValue)
+                        if (match == null) continue
+
+                        val label = match.value.trim().uppercase()
+                        // Remove label from the note text to get the "extra" note content
+                        val extraNote = noteCellValue.replace(match.value, "").trim().trim(',', '.', ';', ' ', ':', '-', '—')
+
+                        val city = formatter.formatCellValue(row.getCell(cityIdx)).trim()
+                        val shopName = formatter.formatCellValue(row.getCell(shopIdx)).trim()
+                        val fullName = formatter.formatCellValue(row.getCell(clientIdx)).trim()
+                        val phonesText = formatter.formatCellValue(row.getCell(phoneIdx)).trim()
+
+                        if (fullName.isBlank() && shopName.isBlank()) continue
+
+                        val phones = phonesText.split("\n", "\r", ",", ";").map { 
+                            it.replace(Regex("[^0-9+]"), "") 
+                        }.filter { it.isNotBlank() }.distinct().sorted()
+
+                        val existing = clientDao.getClientByLabel(label)
+                        val displayInfo = "[$label] $shopName"
+                        labelToDisplayInfo[label] = displayInfo
+
+                        if (existing == null) {
+                            val newId = clientDao.insertClient(ClientEntity(
+                                fullName = fullName,
+                                middleName = "",
+                                shopName = shopName,
+                                city = if (city.isBlank()) null else city,
+                                label = label
+                            ))
+                            phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = newId, phoneNumber = p)) }
+                            if (extraNote.isNotBlank()) {
+                                clientDao.insertNote(NoteEntity(clientId = newId, content = extraNote))
+                            }
+                            labelsAdded.add(label)
+                        } else {
+                            val currentPhones = existing.phones.map { it.phoneNumber }.distinct().sorted()
+                            
+                            // Normalize comparisons (trim and handle nulls)
+                            val isDataChanged = fullName != existing.client.fullName.trim() ||
+                                                shopName != existing.client.shopName.trim() ||
+                                                (city.ifBlank { null }) != existing.client.city ||
+                                                phones != currentPhones
+
+                            val isNoteNew = extraNote.isNotBlank() && existing.notes.none { 
+                                it.content.trim().equals(extraNote, ignoreCase = true) 
+                            }
+
+                            if (isDataChanged || isNoteNew) {
+                                if (isDataChanged) {
+                                    val updatedClient = existing.client.copy(
+                                        fullName = fullName,
+                                        shopName = shopName,
+                                        city = if (city.isBlank()) null else city
+                                    )
+                                    clientDao.insertClient(updatedClient)
+                                    
+                                    if (phones != currentPhones) {
+                                        clientDao.deletePhonesForClient(existing.client.id)
+                                        phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = existing.client.id, phoneNumber = p)) }
+                                    }
+                                }
+                                
+                                if (isNoteNew) {
+                                    clientDao.insertNote(NoteEntity(clientId = existing.client.id, content = extraNote))
+                                }
+                                
+                                // Mark as updated only if it wasn't just added in this same session
+                                if (!labelsAdded.contains(label)) {
+                                    labelsUpdated.add(label)
+                                }
+                            }
+                        }
+                    }
+
+                    autoExportData()
+                    withContext(Dispatchers.Main) {
+                        onResult(ImportResult(
+                            success = true, 
+                            message = "Обробка завершена",
+                            added = labelsAdded.map { labelToDisplayInfo[it] ?: it },
+                            updated = labelsUpdated.map { labelToDisplayInfo[it] ?: it }
+                        ))
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(ImportResult(false, "Помилка: ${e.localizedMessage}"))
+                }
+            }
         }
     }
 

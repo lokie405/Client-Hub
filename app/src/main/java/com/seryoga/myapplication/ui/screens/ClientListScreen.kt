@@ -16,7 +16,9 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.automirrored.filled.CallMade
@@ -32,8 +34,12 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
@@ -41,6 +47,7 @@ import com.seryoga.myapplication.data.CallLogEntity
 import com.seryoga.myapplication.data.ClientWithDetails
 import com.seryoga.myapplication.data.PhoneWithStats
 import com.seryoga.myapplication.ui.ClientViewModel
+import com.seryoga.myapplication.ui.ImportResult
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -57,7 +64,26 @@ fun ClientListScreen(
     val searchQuery by viewModel.searchQuery.collectAsState()
     
     val focusRequester = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
     var selectedClientForPhones by remember { mutableStateOf<Long?>(null) }
+    var importResult by remember { mutableStateOf<ImportResult?>(null) }
+
+    val routePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let {
+            viewModel.importRouteSheet(it) { result ->
+                if (result.success) {
+                    importResult = result
+                } else {
+                    scope.launch {
+                        snackbarHostState.showSnackbar(result.message)
+                    }
+                }
+            }
+        }
+    }
 
     val labelCounts = remember(clients) {
         clients.groupingBy { it.client.label }.eachCount()
@@ -97,11 +123,57 @@ fun ClientListScreen(
         )
     }
 
+    if (importResult != null) {
+        AlertDialog(
+            onDismissRequest = { importResult = null },
+            title = { Text("Результат імпорту") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    if (importResult!!.added.isEmpty() && importResult!!.updated.isEmpty()) {
+                        Text(
+                            "Усі дані з цього маршрутного листа актуальні (вже завантажені та без змін)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    if (importResult!!.added.isNotEmpty()) {
+                        Text("Додано нових (${importResult!!.added.size}):", fontWeight = FontWeight.Bold)
+                        importResult!!.added.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+                        if (importResult!!.updated.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+                    }
+                    if (importResult!!.updated.isNotEmpty()) {
+                        Text("Оновлено (${importResult!!.updated.size}):", fontWeight = FontWeight.Bold)
+                        importResult!!.updated.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { importResult = null }) {
+                    Text("ОК")
+                }
+            }
+        )
+    }
+
     Scaffold(
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("Мої Клієнти", fontWeight = FontWeight.Bold) },
+                title = { Text("Мої Клієнти (${clients.size})", fontWeight = FontWeight.Bold) },
                 actions = {
+                    IconButton(onClick = { 
+                        routePickerLauncher.launch(arrayOf(
+                            "application/vnd.ms-excel",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "application/octet-stream" // Some xls files might have this
+                        ))
+                    }) {
+                        Icon(Icons.Default.Map, contentDescription = "Маршрут")
+                    }
                     IconButton(onClick = onSettingsClick) {
                         Icon(Icons.Default.Settings, contentDescription = "Налаштування")
                     }
@@ -130,7 +202,8 @@ fun ClientListScreen(
                         onClick = { onClientClick(clientWithDetails.client.id) },
                         onCallClick = { selectedClientForPhones = clientWithDetails.client.id },
                         labelCounts = labelCounts,
-                        onClone = { viewModel.cloneClient(clientWithDetails) }
+                        onClone = { viewModel.cloneClient(clientWithDetails) },
+                        searchQuery = searchQuery
                     )
                 }
             }
@@ -193,11 +266,82 @@ fun ClientCard(
     onClick: () -> Unit,
     onCallClick: () -> Unit,
     labelCounts: Map<String?, Int>,
-    onClone: () -> Unit
+    onClone: () -> Unit,
+    searchQuery: String
 ) {
     val context = LocalContext.current
     val client = clientWithDetails.client
     val phones = clientWithDetails.phones
+
+    val highlightColor = Color(0xFFFF9800).copy(alpha = 0.4f)
+    val words = remember(searchQuery) { 
+        searchQuery.split(" ").filter { it.isNotBlank() } 
+    }
+
+    @Composable
+    fun HighlightedText(
+        text: String,
+        style: androidx.compose.ui.text.TextStyle,
+        modifier: Modifier = Modifier,
+        fontWeight: FontWeight? = null,
+        color: Color = Color.Unspecified,
+        maxLines: Int = Int.MAX_VALUE,
+        overflow: TextOverflow = TextOverflow.Clip
+    ) {
+        val annotatedString = buildAnnotatedString {
+            if (words.isEmpty()) {
+                append(text)
+            } else {
+                val lowerText = text.lowercase()
+                
+                // Collect all matches
+                val matches = mutableListOf<IntRange>()
+                words.forEach { word ->
+                    var start = lowerText.indexOf(word.lowercase())
+                    while (start != -1) {
+                        matches.add(start until (start + word.length))
+                        start = lowerText.indexOf(word.lowercase(), start + 1)
+                    }
+                }
+                
+                // Sort and merge overlapping matches
+                val sortedMatches = matches.sortedBy { it.first }
+                val mergedMatches = mutableListOf<IntRange>()
+                if (sortedMatches.isNotEmpty()) {
+                    var currentMatch = sortedMatches[0]
+                    for (i in 1 until sortedMatches.size) {
+                        val nextMatch = sortedMatches[i]
+                        if (nextMatch.first <= currentMatch.last + 1) { // Merge adjacent or overlapping
+                            currentMatch = currentMatch.first..maxOf(currentMatch.last, nextMatch.last)
+                        } else {
+                            mergedMatches.add(currentMatch)
+                            currentMatch = nextMatch
+                        }
+                    }
+                    mergedMatches.add(currentMatch)
+                }
+
+                var lastPos = 0
+                mergedMatches.forEach { range ->
+                    append(text.substring(lastPos, range.first))
+                    withStyle(style = SpanStyle(background = highlightColor)) {
+                        append(text.substring(range.first, range.last + 1))
+                    }
+                    lastPos = range.last + 1
+                }
+                append(text.substring(lastPos))
+            }
+        }
+        Text(
+            text = annotatedString,
+            style = style,
+            modifier = modifier,
+            fontWeight = fontWeight,
+            color = color,
+            maxLines = maxLines,
+            overflow = overflow
+        )
+    }
     
     val isPhoneFilled = phones.any { it.phoneNumber.isNotBlank() }
     val isAddressFilled = !client.addressManual.isNullOrBlank()
@@ -304,12 +448,12 @@ fun ClientCard(
                 Spacer(modifier = Modifier.width(12.dp))
                 
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
+                    HighlightedText(
                         text = clientWithDetails.client.fullName,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(
+                    HighlightedText(
                         text = clientWithDetails.client.shopName,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.secondary,
@@ -334,7 +478,7 @@ fun ClientCard(
                     verticalArrangement = Arrangement.Center
                 ) {
                     if (!client.city.isNullOrBlank()) {
-                        Text(
+                        HighlightedText(
                             text = client.city,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
@@ -348,7 +492,7 @@ fun ClientCard(
                                 color = MaterialTheme.colorScheme.tertiaryContainer,
                                 shape = MaterialTheme.shapes.small
                             ) {
-                                Text(
+                                HighlightedText(
                                     text = clientWithDetails.client.label,
                                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                     style = MaterialTheme.typography.labelMedium,
