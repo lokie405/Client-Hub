@@ -13,6 +13,7 @@ import com.seryoga.myapplication.ui.ClientViewModel
 import com.seryoga.myapplication.ui.screens.ClientDetailScreen
 import com.seryoga.myapplication.ui.screens.ClientListScreen
 import com.seryoga.myapplication.ui.screens.SettingsScreen
+import com.seryoga.myapplication.ui.screens.UpdateLogsScreen
 import com.seryoga.myapplication.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
@@ -54,6 +55,13 @@ class MainActivity : ComponentActivity() {
                             viewModel = viewModel,
                             isDarkTheme = isDarkTheme,
                             onThemeChange = { newValue -> isDarkTheme = newValue },
+                            onBack = { navController.popBackStack() },
+                            onOpenLogs = { navController.navigate("logs") }
+                        )
+                    }
+                    composable("logs") {
+                        UpdateLogsScreen(
+                            viewModel = viewModel,
                             onBack = { navController.popBackStack() }
                         )
                     }

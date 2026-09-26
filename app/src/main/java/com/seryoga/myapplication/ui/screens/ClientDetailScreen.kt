@@ -10,8 +10,10 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,21 +24,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
-import androidx.compose.material.icons.filled.AddLocationAlt
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Map
-import androidx.compose.material.icons.filled.MyLocation
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Phone
-import androidx.compose.material.icons.filled.PushPin
-import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -58,7 +53,7 @@ import com.seryoga.myapplication.ui.ClientViewModel
 import kotlinx.coroutines.launch
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ClientDetailScreen(
     viewModel: ClientViewModel,
@@ -70,7 +65,7 @@ fun ClientDetailScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     
-    var fullName by remember { mutableStateOf("") }
+    var names by remember { mutableStateOf(listOf("")) }
     var shopName by remember { mutableStateOf("") }
     var city by remember { mutableStateOf("") }
     var phones by remember { mutableStateOf(listOf("")) }
@@ -79,23 +74,43 @@ fun ClientDetailScreen(
     var longitude by remember { mutableStateOf<Double?>(null) }
     var label by remember { mutableStateOf("") }
     var newNoteText by remember { mutableStateOf("") }
+
+    // Statuses
+    var namesStatus by remember { mutableStateOf("changed") }
+    var shopNameStatus by remember { mutableStateOf("changed") }
+    var cityStatus by remember { mutableStateOf("changed") }
+    var addressStatus by remember { mutableStateOf("changed") }
+    var phonesStatus by remember { mutableStateOf("changed") }
+    var notesStatus by remember { mutableStateOf("changed") }
     
     // Initial values to detect changes
-    var initialFullName by remember { mutableStateOf("") }
+    var initialNames by remember { mutableStateOf(listOf("")) }
     var initialShopName by remember { mutableStateOf("") }
     var initialCity by remember { mutableStateOf("") }
     var initialPhones by remember { mutableStateOf(listOf("")) }
     var initialAddress by remember { mutableStateOf("") }
     var initialLabel by remember { mutableStateOf("") }
+    var initialNamesStatus by remember { mutableStateOf("changed") }
+    var initialShopNameStatus by remember { mutableStateOf("changed") }
+    var initialCityStatus by remember { mutableStateOf("changed") }
+    var initialAddressStatus by remember { mutableStateOf("changed") }
+    var initialPhonesStatus by remember { mutableStateOf("changed") }
+    var initialNotesStatus by remember { mutableStateOf("changed") }
     
     val hasChanges by remember {
         derivedStateOf {
-            fullName != initialFullName ||
+            names != initialNames ||
             shopName != initialShopName ||
             city != initialCity ||
             phones != initialPhones ||
             address != initialAddress ||
-            label != initialLabel
+            label != initialLabel ||
+            namesStatus != initialNamesStatus ||
+            shopNameStatus != initialShopNameStatus ||
+            cityStatus != initialCityStatus ||
+            addressStatus != initialAddressStatus ||
+            phonesStatus != initialPhonesStatus ||
+            notesStatus != initialNotesStatus
         }
     }
     
@@ -104,15 +119,20 @@ fun ClientDetailScreen(
     val performSave = {
         viewModel.addClient(
             id = clientId,
-            fullName = fullName,
-            middleName = "",
+            names = names,
             shopName = shopName,
             city = city,
             phones = phones,
             address = address,
             lat = latitude,
             lon = longitude,
-            label = label
+            label = label,
+            namesStatus = namesStatus,
+            shopNameStatus = shopNameStatus,
+            cityStatus = cityStatus,
+            addressStatus = addressStatus,
+            phonesStatus = phonesStatus,
+            notesStatus = notesStatus
         )
         onBack()
     }
@@ -125,9 +145,7 @@ fun ClientDetailScreen(
         }
     }
     
-    BackHandler(enabled = true) {
-        requestBack()
-    }
+    BackHandler(enabled = true) { requestBack() }
     
     var showAddressOverwriteDialog by remember { mutableStateOf(false) }
     var pendingCity by remember { mutableStateOf("") }
@@ -139,12 +157,10 @@ fun ClientDetailScreen(
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var clientToDelete by remember { mutableStateOf<ClientWithDetails?>(null) }
     
-    val lastNameFocusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val nameFocusRequester = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
-        if (clientId == null) {
-            lastNameFocusRequester.requestFocus()
-        }
+        if (clientId == null) { nameFocusRequester.requestFocus() }
     }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
@@ -156,15 +172,10 @@ fun ClientDetailScreen(
             viewModel.getCurrentLocationAddress { cityVal, addr, lat, lon ->
                 if (!addr.isNullOrBlank() || !cityVal.isNullOrBlank()) {
                     if (address.isBlank() && city.isBlank()) {
-                        city = cityVal ?: ""
-                        address = addr ?: ""
-                        latitude = lat
-                        longitude = lon
+                        city = cityVal ?: ""; address = addr ?: ""; latitude = lat; longitude = lon
+                        addressStatus = "unchanged" 
                     } else {
-                        pendingCity = cityVal ?: ""
-                        pendingAddress = addr ?: ""
-                        pendingLat = lat
-                        pendingLon = lon
+                        pendingCity = cityVal ?: ""; pendingAddress = addr ?: ""; pendingLat = lat; pendingLon = lon
                         showAddressOverwriteDialog = true
                     }
                 }
@@ -179,19 +190,13 @@ fun ClientDetailScreen(
             text = { Text("Поле адреси вже містить дані. Ви бажаєте перезаписати їх на поточну адресу?") },
             confirmButton = {
                 TextButton(onClick = {
-                    city = pendingCity
-                    address = pendingAddress
-                    latitude = pendingLat
-                    longitude = pendingLon
+                    city = pendingCity; address = pendingAddress; latitude = pendingLat; longitude = pendingLon
+                    addressStatus = "unchanged"
                     showAddressOverwriteDialog = false
-                }) {
-                    Text("Так")
-                }
+                }) { Text("Так") }
             },
             dismissButton = {
-                TextButton(onClick = { showAddressOverwriteDialog = false }) {
-                    Text("Ні")
-                }
+                TextButton(onClick = { showAddressOverwriteDialog = false }) { Text("Ні") }
             }
         )
     }
@@ -201,35 +206,21 @@ fun ClientDetailScreen(
             onDismissRequest = { showUnsavedChangesDialog = false },
             title = { Text("Зберегти зміни?") },
             text = { Text("У вас є незбережені зміни. Ви бажаєте зберегти їх перед виходом?") },
-            confirmButton = {
-                TextButton(onClick = performSave) {
-                    Text("Зберегти")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = onBack) {
-                    Text("Вийти без збереження")
-                }
-            }
+            confirmButton = { TextButton(onClick = performSave) { Text("Зберегти") } },
+            dismissButton = { TextButton(onClick = onBack) { Text("Вийти без збереження") } }
         )
     }
 
     if (showMapPicker) {
         MapPickerDialog(
-            initialCity = city,
-            initialAddress = address,
+            initialCity = city, initialAddress = address,
             onDismiss = { showMapPicker = false },
-            onAddressSelected = { selectedCity, selectedAddress, lat, lon ->
+            onAddressSelected = { sc, sa, lat, lon ->
                 if (address.isBlank() && city.isBlank()) {
-                    city = selectedCity
-                    address = selectedAddress
-                    latitude = lat
-                    longitude = lon
+                    city = sc; address = sa; latitude = lat; longitude = lon
+                    addressStatus = "unchanged"
                 } else {
-                    pendingCity = selectedCity
-                    pendingAddress = selectedAddress
-                    pendingLat = lat
-                    pendingLon = lon
+                    pendingCity = sc; pendingAddress = sa; pendingLat = lat; pendingLon = lon
                     showAddressOverwriteDialog = true
                 }
                 showMapPicker = false
@@ -242,24 +233,16 @@ fun ClientDetailScreen(
         AlertDialog(
             onDismissRequest = { showDeleteConfirmDialog = false },
             title = { Text("Видалити клієнта?") },
-            text = { Text("Ви впевнені, що хочете видалити цю картку? Цю дію неможливо буде скасувати.") },
+            text = { Text("Ви впевнені, що хочете видалити цю картку?") },
             confirmButton = {
-                TextButton(
-                    onClick = {
+                TextButton(onClick = {
                         clientToDelete?.let { viewModel.deleteClient(it) }
                         showDeleteConfirmDialog = false
                         onBack()
-                    },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Видалити")
-                }
+                    }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Видалити") }
             },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirmDialog = false }) {
-                    Text("Скасувати")
-                }
-            }
+            dismissButton = { TextButton(onClick = { showDeleteConfirmDialog = false }) { Text("Скасувати") } }
         )
     }
 
@@ -268,22 +251,22 @@ fun ClientDetailScreen(
             val details = viewModel.getClient(clientId)
             details?.let {
                 clientToDelete = it
-                fullName = it.client.fullName
-                shopName = it.client.shopName
-                city = it.client.city ?: ""
+                names = it.names.map { n -> n.fullName }.ifEmpty { listOf("") }
+                shopName = it.client.shopName; city = it.client.city ?: ""
                 phones = it.phones.map { p -> p.phoneNumber }.ifEmpty { listOf("") }
                 address = it.client.addressManual ?: ""
-                latitude = it.client.latitude
-                longitude = it.client.longitude
+                latitude = it.client.latitude; longitude = it.client.longitude
                 label = it.client.label ?: ""
                 
-                // Set initial values
-                initialFullName = fullName
-                initialShopName = shopName
-                initialCity = city
-                initialPhones = phones
-                initialAddress = address
-                initialLabel = label
+                namesStatus = it.client.namesStatus; shopNameStatus = it.client.shopNameStatus
+                cityStatus = it.client.cityStatus; addressStatus = it.client.addressStatus
+                phonesStatus = it.client.phonesStatus; notesStatus = it.client.notesStatus
+
+                initialNames = names; initialShopName = shopName; initialCity = city
+                initialPhones = phones; initialAddress = address; initialLabel = label
+                initialNamesStatus = namesStatus; initialShopNameStatus = shopNameStatus
+                initialCityStatus = cityStatus; initialAddressStatus = addressStatus
+                initialPhonesStatus = phonesStatus; initialNotesStatus = notesStatus
             }
         }
     }
@@ -293,189 +276,83 @@ fun ClientDetailScreen(
         topBar = {
             TopAppBar(
                 title = { Text(if (clientId == null) "Новий Клієнт" else "Редагувати") },
-                navigationIcon = {
-                    IconButton(onClick = requestBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
-                    }
-                },
+                navigationIcon = { IconButton(onClick = requestBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null) } },
                 actions = {
                     if (clientId != null) {
-                        IconButton(onClick = { showDeleteConfirmDialog = true }) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = "Видалити",
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        }
+                        IconButton(onClick = { showDeleteConfirmDialog = true }) { Icon(Icons.Default.Delete, "Видалити", tint = MaterialTheme.colorScheme.error) }
                     }
-                    IconButton(onClick = performSave) {
-                        Icon(Icons.Default.Save, contentDescription = "Зберегти")
-                    }
+                    IconButton(onClick = performSave) { Icon(Icons.Default.Save, "Зберегти") }
                 }
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .padding(16.dp)
-                .fillMaxSize()
-                .imePadding()
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            OutlinedTextField(
-                value = fullName,
-                onValueChange = { fullName = it },
-                label = { Text("Ім'я та прізвище") },
-                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.Words,
-                    imeAction = ImeAction.Next
-                ),
-                keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .focusRequester(lastNameFocusRequester)
-            )
-            OutlinedTextField(
-                value = shopName,
-                onValueChange = { shopName = it.replaceFirstChar { char -> char.uppercase() } },
-                label = { Text("Назва магазину") },
-                leadingIcon = { Icon(Icons.Default.Storefront, contentDescription = null) },
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.Sentences,
-                    imeAction = ImeAction.Next
-                ),
-                keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }),
-                modifier = Modifier.fillMaxWidth()
-            )
+        Column(modifier = Modifier.padding(padding).padding(16.dp).fillMaxSize().imePadding().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            
+            // Names section
+            Column(modifier = Modifier.border(2.dp, if(namesStatus=="changed") Color(0xFF4CAF50) else Color(0xFFFF9800), RoundedCornerShape(4.dp)).padding(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Імена та прізвища", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    StatusIndicator(status = namesStatus, onToggle = { namesStatus = it }, label = "Імена")
+                }
+                names.forEachIndexed { index, name ->
+                    OutlinedTextField(
+                        value = name, onValueChange = { nv -> names = names.toMutableList().also { it[index] = nv } },
+                        label = { Text("Ім'я та прізвище ${index + 1}") },
+                        modifier = Modifier.fillMaxWidth().focusRequester(if(index==0) nameFocusRequester else remember { FocusRequester() })
+                    )
+                }
+                TextButton(onClick = { names = names + "" }) { Text("Додати ще одне ім'я") }
+            }
 
-            OutlinedTextField(
-                value = city,
-                onValueChange = { city = it.replaceFirstChar { char -> char.uppercase() } },
-                label = { Text("Населений пункт") },
-                leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = null) },
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.Words,
-                    imeAction = ImeAction.Next
-                ),
-                keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }),
-                modifier = Modifier.fillMaxWidth()
-            )
+            StatusTextField(value = shopName, onValue_Change = { shopName = it.replaceFirstChar { c -> c.uppercase() } }, label = "Назва магазину", status = shopNameStatus, onStatusChange = { shopNameStatus = it }, icon = Icons.Default.Storefront)
+            StatusTextField(value = city, onValue_Change = { city = it.replaceFirstChar { c -> c.uppercase() } }, label = "Населений пункт", status = cityStatus, onStatusChange = { cityStatus = it }, icon = Icons.Default.LocationOn)
 
-            OutlinedTextField(
-                value = label,
-                onValueChange = { label = it.uppercase() },
-                label = { Text("Мітка") },
-                leadingIcon = { Icon(Icons.AutoMirrored.Filled.Label, contentDescription = null) },
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.Characters,
-                    imeAction = ImeAction.Next
-                ),
-                keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }),
-                modifier = Modifier.fillMaxWidth()
-            )
+            OutlinedTextField(value = label, onValueChange = { label = it.uppercase() }, label = { Text("Мітка") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.Label, null) }, modifier = Modifier.fillMaxWidth())
 
-            OutlinedTextField(
-                value = address,
-                onValueChange = { address = it },
-                label = { Text("Адреса") },
-                leadingIcon = { Icon(Icons.Default.Map, contentDescription = null) },
+            StatusTextField(
+                value = address, onValue_Change = { address = it; addressStatus = "unchanged" }, label = "Адреса", status = addressStatus, onStatusChange = { addressStatus = it }, icon = Icons.Default.Map,
                 trailingIcon = {
                     Row {
                         IconButton(onClick = {
                             if (address.isNotBlank()) {
-                                val pinLabel = "$shopName, $fullName ($label)"
-                                
+                                val cleanShop = cleanTextForCopy(shopName)
+                                val cleanFirstName = cleanTextForCopy(names.firstOrNull() ?: "")
+                                val pinLabel = listOfNotNull(cleanShop.ifBlank { null }, cleanFirstName.ifBlank { null }).joinToString(", ") + if (label.isNotBlank()) " ($label)" else ""
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                val clip = ClipData.newPlainText("Client Info", pinLabel)
-                                clipboard.setPrimaryClip(clip)
-                                
-                                scope.launch {
-                                    snackbarHostState.showSnackbar("Інформацію скопійовано")
-                                }
-
-                                val gmmIntentUri = if (latitude != null && longitude != null) {
-                                    Uri.parse("geo:0,0?q=${latitude},${longitude}(${Uri.encode(pinLabel)})&z=20")
-                                } else {
-                                    Uri.parse("geo:0,0?q=${Uri.encode(address)}(${Uri.encode(pinLabel)})&z=20")
-                                }
-                                val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
-                                mapIntent.setPackage("com.google.android.apps.maps")
-                                context.startActivity(mapIntent)
+                                clipboard.setPrimaryClip(ClipData.newPlainText("Client Info", pinLabel))
+                                scope.launch { snackbarHostState.showSnackbar("Інформацію скопійовано") }
+                                val gmmUri = if (latitude != null && longitude != null) Uri.parse("geo:0,0?q=$latitude,$longitude(${Uri.encode(pinLabel)})&z=20") else Uri.parse("geo:0,0?q=${Uri.encode(address)}(${Uri.encode(pinLabel)})&z=20")
+                                context.startActivity(Intent(Intent.ACTION_VIEW, gmmUri).apply { setPackage("com.google.android.apps.maps") })
                             }
-                        }) {
-                            Icon(Icons.Default.PushPin, contentDescription = "Створити мітку", tint = MaterialTheme.colorScheme.primary)
-                        }
-                        IconButton(onClick = {
-                            locationPermissionLauncher.launch(
-                                arrayOf(
-                                    Manifest.permission.ACCESS_FINE_LOCATION,
-                                    Manifest.permission.ACCESS_COARSE_LOCATION
-                                )
-                            )
-                        }) {
-                            Icon(Icons.Default.MyLocation, contentDescription = "Моя локація")
-                        }
-                        IconButton(onClick = { showMapPicker = true }) {
-                            Icon(Icons.Default.AddLocationAlt, contentDescription = "Вибрати на карті")
-                        }
+                        }) { Icon(Icons.Default.PushPin, "Створити мітку", tint = MaterialTheme.colorScheme.primary) }
+                        IconButton(onClick = { locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }) { Icon(Icons.Default.MyLocation, "Моя локація") }
+                        IconButton(onClick = { showMapPicker = true }) { Icon(Icons.Default.AddLocationAlt, "Вибрати на карті") }
                     }
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }),
-                modifier = Modifier.fillMaxWidth()
+                }
             )
 
-            Text("Телефони", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            phones.forEachIndexed { index, phone ->
-                OutlinedTextField(
-                    value = phone,
-                    onValueChange = { newValue ->
-                        if (newValue.contains("\n")) {
-                            val lines = newValue.split("\n").filter { it.isNotBlank() }
-                            val newList = phones.toMutableList()
-                            newList.removeAt(index)
-                            newList.addAll(index, lines)
-                            phones = newList
-                        } else {
-                            val newList = phones.toMutableList()
-                            newList[index] = newValue
-                            phones = newList
-                        }
-                    },
-                    label = { Text("Телефон ${index + 1}") },
-                    leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) }),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            TextButton(onClick = { phones = phones + "" }) {
-                Text("Додати ще один номер")
+            // Phones section
+            Column(modifier = Modifier.border(2.dp, if(phonesStatus=="changed") Color(0xFF4CAF50) else Color(0xFFFF9800), RoundedCornerShape(4.dp)).padding(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Телефони", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    StatusIndicator(status = phonesStatus, onToggle = { phonesStatus = it }, label = "Телефони")
+                }
+                phones.forEachIndexed { index, phone ->
+                    OutlinedTextField(value = phone, onValueChange = { nv -> phones = phones.toMutableList().also { it[index] = nv } }, label = { Text("Телефон ${index + 1}") }, modifier = Modifier.fillMaxWidth())
+                }
+                TextButton(onClick = { phones = phones + "" }) { Text("Додати ще один номер") }
             }
 
-            HorizontalDivider()
-            Text("Примітки", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            
-            OutlinedTextField(
-                value = newNoteText,
-                onValueChange = { newNoteText = it },
-                label = { Text("Нова замітка") },
-                leadingIcon = { Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = null) },
-                trailingIcon = {
-                    IconButton(onClick = {
-                        if (clientId != null && newNoteText.isNotBlank()) {
-                            viewModel.addNote(clientId, newNoteText)
-                            newNoteText = ""
-                        }
-                    }) {
-                        Icon(Icons.Default.Save, contentDescription = null)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            )
+            // Notes section
+            Column(modifier = Modifier.border(2.dp, if(notesStatus=="changed") Color(0xFF4CAF50) else Color(0xFFFF9800), RoundedCornerShape(4.dp)).padding(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Примітки", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    StatusIndicator(status = notesStatus, onToggle = { notesStatus = it }, label = "Примітки")
+                }
+                OutlinedTextField(value = newNoteText, onValueChange = { newNoteText = it }, label = { Text("Нова замітка") }, trailingIcon = {
+                    IconButton(onClick = { if (clientId != null && newNoteText.isNotBlank()) { viewModel.addNote(clientId, newNoteText); newNoteText = "" } }) { Icon(Icons.Default.Save, null) }
+                }, modifier = Modifier.fillMaxWidth())
+            }
         }
     }
 }
@@ -491,161 +368,76 @@ fun MapPickerDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val kyiv = LatLng(50.4501, 30.5234)
-    val cameraPositionState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(kyiv, 19f)
-    }
-    
+    val cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(kyiv, 19f) }
     var currentCity by remember { mutableStateOf("") }
     var currentStreet by remember { mutableStateOf("Завантаження...") }
-
-    // Center map on initial address if provided
     LaunchedEffect(initialCity, initialAddress) {
         val fullAddr = listOf(initialCity, initialAddress).filter { it.isNotBlank() }.joinToString(", ")
         if (fullAddr.isNotBlank()) {
             try {
-                val geocoder = Geocoder(context, Locale.getDefault())
-                val addresses = geocoder.getFromLocationName(fullAddr, 1)
+                val addresses = Geocoder(context, Locale.getDefault()).getFromLocationName(fullAddr, 1)
                 if (!addresses.isNullOrEmpty()) {
-                    val addr = addresses[0]
-                    cameraPositionState.position = CameraPosition.fromLatLngZoom(
-                        LatLng(addr.latitude, addr.longitude), 19f
-                    )
+                    cameraPositionState.position = CameraPosition.fromLatLngZoom(LatLng(addresses[0].latitude, addresses[0].longitude), 19f)
                 }
             } catch (e: Exception) {}
         }
     }
-
-    // Update address when map stops moving
     LaunchedEffect(cameraPositionState.isMoving) {
         if (!cameraPositionState.isMoving) {
             val center = cameraPositionState.position.target
             viewModel.getAddressFromLocation(center.latitude, center.longitude) { cityVal, street ->
-                currentCity = cityVal ?: ""
-                currentStreet = street ?: "Не вдалося визначити адресу"
+                currentCity = cityVal ?: ""; currentStreet = street ?: "Не вдалося визначити адресу"
             }
         }
     }
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Box(modifier = Modifier.fillMaxSize()) {
-                GoogleMap(
-                    modifier = Modifier.fillMaxSize(),
-                    cameraPositionState = cameraPositionState,
-                    uiSettings = MapUiSettings(zoomControlsEnabled = false),
-                    contentPadding = PaddingValues(bottom = 160.dp)
-                )
-
-                // Fixed Center Marker
-                Icon(
-                    imageVector = Icons.Default.LocationOn,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(bottom = 196.dp) // Adjusted for contentPadding
-                        .size(48.dp),
-                    tint = Color.Red
-                )
-
-                // Zoom Buttons
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 16.dp, bottom = 80.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    FloatingActionButton(
-                        onClick = {
-                            scope.launch {
-                                cameraPositionState.animate(
-                                    CameraUpdateFactory.zoomIn(),
-                                    400
-                                )
-                            }
-                        },
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-                        modifier = Modifier.size(48.dp),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("+", style = MaterialTheme.typography.headlineSmall)
-                    }
-                    FloatingActionButton(
-                        onClick = {
-                            scope.launch {
-                                cameraPositionState.animate(
-                                    CameraUpdateFactory.zoomOut(),
-                                    400
-                                )
-                            }
-                        },
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-                        modifier = Modifier.size(48.dp),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("-", style = MaterialTheme.typography.headlineSmall)
-                    }
+                GoogleMap(modifier = Modifier.fillMaxSize(), cameraPositionState = cameraPositionState, uiSettings = MapUiSettings(zoomControlsEnabled = false), contentPadding = PaddingValues(bottom = 160.dp))
+                Icon(imageVector = Icons.Default.LocationOn, contentDescription = null, modifier = Modifier.align(Alignment.Center).padding(bottom = 196.dp).size(48.dp), tint = Color.Red)
+                Column(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 16.dp, bottom = 80.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    FloatingActionButton(onClick = { scope.launch { cameraPositionState.animate(CameraUpdateFactory.zoomIn(), 400) } }, containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f), modifier = Modifier.size(48.dp), shape = RoundedCornerShape(12.dp)) { Text("+", style = MaterialTheme.typography.headlineSmall) }
+                    FloatingActionButton(onClick = { scope.launch { cameraPositionState.animate(CameraUpdateFactory.zoomOut(), 400) } }, containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f), modifier = Modifier.size(48.dp), shape = RoundedCornerShape(12.dp)) { Text("-", style = MaterialTheme.typography.headlineSmall) }
                 }
-
-                // Bottom Panel
-                Card(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(16.dp)
-                        .fillMaxWidth(),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = if (currentCity.isNotBlank()) "$currentCity, $currentStreet" else currentStreet,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(bottom = 16.dp)
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = onDismiss,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Скасувати")
-                            }
-                            Button(
-                                onClick = { 
-                                    val target = cameraPositionState.position.target
-                                    onAddressSelected(currentCity, currentStreet, target.latitude, target.longitude) 
-                                },
-                                modifier = Modifier.weight(1f),
-                                enabled = currentStreet != "Завантаження..." && currentStreet != "Не вдалося визначити адресу"
-                            ) {
-                                Text("Вибрати")
-                            }
+                Card(modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp).fillMaxWidth(), elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)) {
+                    Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(text = if (currentCity.isNotBlank()) "$currentCity, $currentStreet" else currentStreet, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Скасувати") }
+                            Button(onClick = { onAddressSelected(currentCity, currentStreet, cameraPositionState.position.target.latitude, cameraPositionState.position.target.longitude) }, modifier = Modifier.weight(1f), enabled = currentStreet != "Завантаження..." && currentStreet != "Не вдалося визначити адресу") { Text("Вибрати") }
                         }
                     }
                 }
-
-                // Top Back Button
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(16.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
-                }
+                IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopStart).padding(16.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null) }
             }
         }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun StatusTextField(value: String, onValue_Change: (String) -> Unit, label: String, status: String, onStatusChange: (String) -> Unit, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier = Modifier, trailingIcon: @Composable (() -> Unit)? = null) {
+    var showDialog by remember { mutableStateOf(false) }
+    val borderColor = if (status == "changed") Color(0xFF4CAF50) else Color(0xFFFF9800)
+    if (showDialog) {
+        val nextStatus = if (status == "changed") "unchanged" else "changed"
+        AlertDialog(onDismissRequest = { showDialog = false }, title = { Text("$status змінити на $nextStatus") }, confirmButton = { TextButton(onClick = { onStatusChange(nextStatus); showDialog = false }) { Text(nextStatus) } }, dismissButton = { TextButton(onClick = { showDialog = false }) { Text("Скасувати") } })
+    }
+    Box(modifier = modifier.fillMaxWidth().border(2.dp, borderColor, RoundedCornerShape(4.dp)).combinedClickable(onClick = {}, onLongClick = { showDialog = true })) {
+        OutlinedTextField(value = value, onValueChange = onValue_Change, label = { Text(label) }, leadingIcon = { Icon(icon, null) }, trailingIcon = trailingIcon, modifier = Modifier.fillMaxWidth(), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.Transparent, unfocusedBorderColor = Color.Transparent))
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun StatusIndicator(status: String, onToggle: (String) -> Unit, label: String) {
+    var showDialog by remember { mutableStateOf(false) }
+    val color = if (status == "changed") Color(0xFF4CAF50) else Color(0xFFFF9800)
+    if (showDialog) {
+        val nextStatus = if (status == "changed") "unchanged" else "changed"
+        AlertDialog(onDismissRequest = { showDialog = false }, title = { Text("$status змінити на $nextStatus для поля $label") }, confirmButton = { TextButton(onClick = { onToggle(nextStatus); showDialog = false }) { Text(nextStatus) } }, dismissButton = { TextButton(onClick = { showDialog = false }) { Text("Скасувати") } })
+    }
+    Surface(color = color.copy(alpha = 0.1f), shape = RoundedCornerShape(4.dp), modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { showDialog = true })) {
+        Text(text = status, color = color, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), fontWeight = FontWeight.Bold)
     }
 }
