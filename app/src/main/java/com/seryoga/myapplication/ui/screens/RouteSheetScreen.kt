@@ -8,10 +8,12 @@ import android.net.Uri
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -38,6 +41,9 @@ import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
 import com.seryoga.myapplication.data.RouteSheetItemEntity
 import com.seryoga.myapplication.ui.ClientViewModel
+import sh.calvin.reorderable.ReorderableCollectionItemScope
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -55,7 +61,17 @@ fun RouteSheetScreen(
     }
 
     var localItems by remember(items) { mutableStateOf(items) }
+    LaunchedEffect(items) {
+        localItems = items
+    }
+
     val lazyListState = rememberLazyListState()
+    val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
+        localItems = localItems.toMutableList().apply {
+            add(to.index, removeAt(from.index))
+        }
+        viewModel.reorderRouteItems(localItems)
+    }
 
     if (selectedItemForNote != null) {
         RouteItemNoteDialog(
@@ -134,18 +150,29 @@ fun RouteSheetScreen(
                     contentPadding = PaddingValues(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    itemsIndexed(localItems, key = { _, item -> item.id }) { index, item ->
-                        RouteItemCard(
-                            index = index,
-                            totalCount = localItems.size,
-                            item = item,
-                            onDoubleTapNumber = {
-                                swapItemData = item to index
-                            },
-                            onMoveUp = { viewModel.moveRouteItemUp(localItems, index) },
-                            onMoveDown = { viewModel.moveRouteItemDown(localItems, index) },
-                            onEditNote = { selectedItemForNote = item }
-                        )
+                    items(localItems, key = { it.id }) { item ->
+                        ReorderableItem(reorderableState, key = item.id) { isDragging ->
+                            val index = localItems.indexOf(item)
+                            RouteItemCard(
+                                reorderableScope = this,
+                                index = if (index >= 0) index else 0,
+                                totalCount = localItems.size,
+                                item = item,
+                                isDragging = isDragging,
+                                onDoubleTapNumber = {
+                                    swapItemData = item to if (index >= 0) index else 0
+                                },
+                                onMoveUp = {
+                                    val idx = localItems.indexOf(item)
+                                    if (idx > 0) viewModel.moveRouteItemUp(localItems, idx)
+                                },
+                                onMoveDown = {
+                                    val idx = localItems.indexOf(item)
+                                    if (idx in 0 until localItems.size - 1) viewModel.moveRouteItemDown(localItems, idx)
+                                },
+                                onEditNote = { selectedItemForNote = item }
+                            )
+                        }
                     }
                 }
             }
@@ -155,9 +182,11 @@ fun RouteSheetScreen(
 
 @Composable
 fun RouteItemCard(
+    reorderableScope: ReorderableCollectionItemScope,
     index: Int,
     totalCount: Int,
     item: RouteSheetItemEntity,
+    isDragging: Boolean,
     onDoubleTapNumber: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
@@ -165,10 +194,20 @@ fun RouteItemCard(
 ) {
     val hasNote = item.noteText.isNotBlank() || item.noteAudioUri != null || item.notePhotoUri != null || item.noteFileUri != null
 
+    val elevation by animateDpAsState(if (isDragging) 8.dp else 2.dp, label = "elevation")
+    val scale by animateFloatAsState(if (isDragging) 1.03f else 1f, label = "scale")
+
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            },
+        elevation = CardDefaults.cardElevation(defaultElevation = elevation),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isDragging) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f) else MaterialTheme.colorScheme.surface
+        )
     ) {
         Row(
             modifier = Modifier
@@ -186,14 +225,14 @@ fun RouteItemCard(
                         )
                     },
                 shape = RoundedCornerShape(10.dp),
-                color = MaterialTheme.colorScheme.primaryContainer,
+                color = if (isDragging) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer,
                 tonalElevation = 4.dp
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
                         text = "${index + 1}",
                         style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        color = if (isDragging) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onPrimaryContainer,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -257,7 +296,7 @@ fun RouteItemCard(
                 }
             }
 
-            // Note button & Move Up/Down buttons
+            // Note button, Move Up/Down buttons & Drag handle with .draggableHandle()
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onEditNote) {
                     Icon(
@@ -271,7 +310,7 @@ fun RouteItemCard(
                     IconButton(
                         onClick = onMoveUp,
                         enabled = index > 0,
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(24.dp)
                     ) {
                         Icon(
                             Icons.Default.KeyboardArrowUp,
@@ -282,12 +321,29 @@ fun RouteItemCard(
                     IconButton(
                         onClick = onMoveDown,
                         enabled = index < totalCount - 1,
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(24.dp)
                     ) {
                         Icon(
                             Icons.Default.KeyboardArrowDown,
                             contentDescription = "Вниз",
                             tint = if (index < totalCount - 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                        )
+                    }
+                }
+
+                // Drag handle with .draggableHandle() from calvin-ll/reorderable
+                with(reorderableScope) {
+                    IconButton(
+                        onClick = {},
+                        modifier = Modifier
+                            .padding(start = 4.dp)
+                            .size(38.dp)
+                            .draggableHandle()
+                    ) {
+                        Icon(
+                            Icons.Default.Menu,
+                            contentDescription = "Перетягнути",
+                            tint = if (isDragging) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
                         )
                     }
                 }

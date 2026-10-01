@@ -75,6 +75,9 @@ dependencies {
     implementation("org.apache.poi:poi-ooxml:5.2.5")
     implementation("com.fasterxml.jackson.core:jackson-core:2.15.2")
 
+    // Reorderable
+    implementation("sh.calvin.reorderable:reorderable:3.1.0")
+
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
