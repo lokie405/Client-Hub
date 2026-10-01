@@ -109,3 +109,39 @@ data class PhoneWithStats(
     val incomingCount: Int,
     val outgoingCount: Int
 )
+
+@Entity(tableName = "route_sheets")
+data class RouteSheetEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val dateString: String, // "yyyy-MM-dd"
+    val createdTimestamp: Long,
+    val isArchived: Boolean = false
+)
+
+@Entity(
+    tableName = "route_sheet_items",
+    indices = [Index(value = ["routeSheetId"])]
+)
+data class RouteSheetItemEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val routeSheetId: Long,
+    val clientId: Long = 0,
+    val orderIndex: Int,
+    val clientLabelSnapshot: String = "",
+    val clientShopSnapshot: String = "",
+    val clientCitySnapshot: String? = null,
+    val clientNameSnapshot: String = "",
+    val noteText: String = "",
+    val noteAudioUri: String? = null,
+    val notePhotoUri: String? = null,
+    val noteFileUri: String? = null
+)
+
+data class RouteSheetWithItems(
+    @Embedded val routeSheet: RouteSheetEntity,
+    @Relation(
+        parentColumn = "id",
+        entityColumn = "routeSheetId"
+    )
+    val items: List<RouteSheetItemEntity>
+)

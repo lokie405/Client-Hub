@@ -103,9 +103,45 @@ interface ClientDao {
 
     @Query("SELECT COUNT(*) FROM call_logs WHERE phoneNumber = :phoneNumber AND type = 2")
     suspend fun getOutgoingCount(phoneNumber: String): Int
+
+    @Transaction
+    @Query("SELECT * FROM route_sheets WHERE isArchived = 0 ORDER BY createdTimestamp DESC LIMIT 1")
+    fun getActiveRouteSheet(): Flow<RouteSheetWithItems?>
+
+    @Transaction
+    @Query("SELECT * FROM route_sheets ORDER BY createdTimestamp DESC")
+    fun getAllRouteSheetsWithItems(): Flow<List<RouteSheetWithItems>>
+
+    @Transaction
+    @Query("SELECT * FROM route_sheets WHERE id = :id")
+    suspend fun getRouteSheetById(id: Long): RouteSheetWithItems?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertRouteSheet(routeSheet: RouteSheetEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertRouteSheetItems(items: List<RouteSheetItemEntity>)
+
+    @Update
+    suspend fun updateRouteSheetItem(item: RouteSheetItemEntity)
+
+    @Update
+    suspend fun updateRouteSheetItems(items: List<RouteSheetItemEntity>)
+
+    @Query("UPDATE route_sheets SET isArchived = 1 WHERE isArchived = 0 AND dateString != :todayDate")
+    suspend fun archiveOldRouteSheets(todayDate: String)
+
+    @Query("UPDATE route_sheets SET isArchived = 1 WHERE isArchived = 0")
+    suspend fun archiveActiveRouteSheet()
+
+    @Query("DELETE FROM route_sheets WHERE id = :routeSheetId")
+    suspend fun deleteRouteSheet(routeSheetId: Long)
+
+    @Query("DELETE FROM route_sheet_items WHERE routeSheetId = :routeSheetId")
+    suspend fun deleteRouteSheetItems(routeSheetId: Long)
 }
 
-@Database(entities = [ClientEntity::class, NameEntity::class, PhoneEntity::class, NoteEntity::class, CallLogEntity::class, UpdateLogSession::class, UpdateLogEntry::class], version = 10)
+@Database(entities = [ClientEntity::class, NameEntity::class, PhoneEntity::class, NoteEntity::class, CallLogEntity::class, UpdateLogSession::class, UpdateLogEntry::class, RouteSheetEntity::class, RouteSheetItemEntity::class], version = 11)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun clientDao(): ClientDao
@@ -152,6 +188,14 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `route_sheets` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `dateString` TEXT NOT NULL, `createdTimestamp` INTEGER NOT NULL, `isArchived` INTEGER NOT NULL DEFAULT 0)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `route_sheet_items` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `routeSheetId` INTEGER NOT NULL, `clientId` INTEGER NOT NULL DEFAULT 0, `orderIndex` INTEGER NOT NULL, `clientLabelSnapshot` TEXT NOT NULL DEFAULT '', `clientShopSnapshot` TEXT NOT NULL DEFAULT '', `clientCitySnapshot` TEXT, `clientNameSnapshot` TEXT NOT NULL DEFAULT '', `noteText` TEXT NOT NULL DEFAULT '', `noteAudioUri` TEXT, `notePhotoUri` TEXT, `noteFileUri` TEXT)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_route_sheet_items_routeSheetId` ON `route_sheet_items` (`routeSheetId`)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -159,7 +203,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "client_database"
                 )
-                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

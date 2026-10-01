@@ -12,6 +12,8 @@ import androidx.navigation.compose.rememberNavController
 import com.seryoga.myapplication.ui.ClientViewModel
 import com.seryoga.myapplication.ui.screens.ClientDetailScreen
 import com.seryoga.myapplication.ui.screens.ClientListScreen
+import com.seryoga.myapplication.ui.screens.RouteJournalScreen
+import com.seryoga.myapplication.ui.screens.RouteSheetScreen
 import com.seryoga.myapplication.ui.screens.SettingsScreen
 import com.seryoga.myapplication.ui.screens.UpdateLogsScreen
 import com.seryoga.myapplication.ui.theme.MyApplicationTheme
@@ -39,7 +41,25 @@ class MainActivity : ComponentActivity() {
                             },
                             onSettingsClick = {
                                 navController.navigate("settings")
+                            },
+                            onRouteSheetClick = {
+                                navController.navigate("route_sheet")
+                            },
+                            onRouteJournalClick = {
+                                navController.navigate("route_journal")
                             }
+                        )
+                    }
+                    composable("route_sheet") {
+                        RouteSheetScreen(
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable("route_journal") {
+                        RouteJournalScreen(
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() }
                         )
                     }
                     composable("detail/{clientId}") { backStackEntry ->

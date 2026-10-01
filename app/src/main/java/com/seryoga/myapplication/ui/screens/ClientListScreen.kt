@@ -20,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.Label
@@ -55,7 +56,9 @@ fun ClientListScreen(
     viewModel: ClientViewModel,
     onClientClick: (Long) -> Unit,
     onAddClientClick: () -> Unit,
-    onSettingsClick: () -> Unit
+    onSettingsClick: () -> Unit,
+    onRouteSheetClick: () -> Unit = {},
+    onRouteJournalClick: () -> Unit = {}
 ) {
     val clients by viewModel.clients.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
@@ -65,6 +68,7 @@ fun ClientListScreen(
     val focusRequester = remember { FocusRequester() }
     var selectedClientForPhones by remember { mutableStateOf<Long?>(null) }
     var importResult by remember { mutableStateOf<ImportResult?>(null) }
+    var pendingRouteClients by remember { mutableStateOf<List<ImportedRouteClient>?>(null) }
 
     val labelCounts = remember(clients) {
         clients.groupingBy { it.client.label }.eachCount()
@@ -112,6 +116,61 @@ fun ClientListScreen(
         )
     }
 
+    if (pendingRouteClients != null) {
+        val activeRouteSheet by viewModel.activeRouteSheet.collectAsState()
+        val hasExistingActiveRoute = activeRouteSheet != null && activeRouteSheet!!.items.isNotEmpty()
+
+        if (hasExistingActiveRoute) {
+            AlertDialog(
+                onDismissRequest = { pendingRouteClients = null },
+                title = { Text("Скласти новий маршрутник?") },
+                text = { Text("У вас вже є активний маршрутник. Зберегти його з усіма нотатками в журнал перед створенням нового?") },
+                confirmButton = {
+                    Column(horizontalAlignment = Alignment.End) {
+                        TextButton(onClick = {
+                            val list = pendingRouteClients!!
+                            pendingRouteClients = null
+                            viewModel.createRouteSheet(list, savePreviousToJournal = true)
+                            onRouteSheetClick()
+                        }) {
+                            Text("Зберегти в журнал", fontWeight = FontWeight.Bold)
+                        }
+                        TextButton(onClick = {
+                            val list = pendingRouteClients!!
+                            pendingRouteClients = null
+                            viewModel.createRouteSheet(list, savePreviousToJournal = false)
+                            onRouteSheetClick()
+                        }) {
+                            Text("Замінити без збереження", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingRouteClients = null }) { Text("Скасувати") }
+                }
+            )
+        } else {
+            AlertDialog(
+                onDismissRequest = { pendingRouteClients = null },
+                title = { Text("Скласти маршрутник?") },
+                text = { Text("Скласти новий маршрутник з завантажених клієнтів (${pendingRouteClients!!.size})?") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val list = pendingRouteClients!!
+                        pendingRouteClients = null
+                        viewModel.createRouteSheet(list, savePreviousToJournal = true)
+                        onRouteSheetClick()
+                    }) {
+                        Text("Так", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingRouteClients = null }) { Text("Ні") }
+                }
+            )
+        }
+    }
+
     if (importResult != null) {
         AlertDialog(
             onDismissRequest = { importResult = null },
@@ -144,7 +203,15 @@ fun ClientListScreen(
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { importResult = null }) { Text("ОК") } }
+            confirmButton = {
+                TextButton(onClick = {
+                    val res = importResult
+                    importResult = null
+                    if (res?.success == true && res.routeClients.isNotEmpty()) {
+                        pendingRouteClients = res.routeClients
+                    }
+                }) { Text("ОК") }
+            }
         )
     }
 
@@ -154,7 +221,9 @@ fun ClientListScreen(
             TopAppBar(
                 title = { Text("Клієнти (${clients.size})", fontWeight = FontWeight.Bold) },
                 actions = {
-                    IconButton(onClick = { routePickerLauncher.launch(arrayOf("application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) }) { Icon(Icons.Default.Map, "Маршрут") }
+                    IconButton(onClick = onRouteSheetClick) { Icon(Icons.AutoMirrored.Filled.AltRoute, "Маршрутник") }
+                    IconButton(onClick = onRouteJournalClick) { Icon(Icons.Default.History, "Журнал") }
+                    IconButton(onClick = { routePickerLauncher.launch(arrayOf("application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) }) { Icon(Icons.Default.Map, "Завантажити маршрут") }
                     IconButton(onClick = onSettingsClick) { Icon(Icons.Default.Settings, "Налаштування") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primaryContainer, titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer)
@@ -199,9 +268,9 @@ fun cleanTextForCopy(text: String): String {
     if (text.isBlank()) return ""
     return text
         .replace(Regex("""(?i)\b(ФОП|маг\.|м-н\.|маг|м-н)\b\.?"""), "")
-        .replace(Regex("""(?i)^[,\.\s:\-—]+|[,\.\s:\-—]+$"""), "")
+        .replace(Regex("""(?i)^[,\.\s:\-—"“'«»]+|[,\.\s:\-—"“'«»]+$"""), "")
         .replace(Regex("""\s+"""), " ")
-        .trim()
+        .trim('"', '“', '”', '«', '»', ' ')
 }
 
 fun formatShortName(fullName: String): String {
@@ -310,13 +379,13 @@ fun ClientCard(
                     showMenu = false
                     val shopClean = cleanTextForCopy(client.shopName)
                     val namesClean = clientWithDetails.names.map { cleanTextForCopy(it.fullName) }.filter { it.isNotBlank() }.joinToString(", ")
-                    val shareText = "Магазин: $shopClean\nКлієнт: $namesClean\nАдреса: ${client.addressManual ?: ""}"
+                    val shareText = "Магазин: $shopClean\nКлієнт: $namesClean\nАдреса: ${client.addressManual ?: ""}".replace("\"\"", "\"")
                     context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { putExtra(Intent.EXTRA_TEXT, shareText); type = "text/plain" }, null))
                 })
                 DropdownMenuItem(text = { Text("ПІБ") }, leadingIcon = { Icon(Icons.Default.Person, null) }, onClick = {
                     showMenu = false
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    val namesText = clientWithDetails.names.map { cleanTextForCopy(it.fullName) }.filter { it.isNotBlank() }.joinToString(" ")
+                    val namesText = clientWithDetails.names.map { cleanTextForCopy(it.fullName) }.filter { it.isNotBlank() }.joinToString(" ").replace("\"\"", "\"")
                     clipboard.setPrimaryClip(ClipData.newPlainText("ПІБ", namesText))
                 })
                 DropdownMenuItem(text = { Text("Повні дані") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.Assignment, null) }, onClick = {
@@ -326,7 +395,7 @@ fun ClientCard(
                     val shopText = if (shopClean.isNotBlank()) "\"$shopClean\"" else null
                     val namesText = clientWithDetails.names.map { cleanTextForCopy(it.fullName) }.filter { it.isNotBlank() }.joinToString(" ").ifBlank { null }
                     val labelText = client.label?.trim()?.ifBlank { null }
-                    val fullData = listOfNotNull(shopText, namesText, labelText).joinToString(" ")
+                    val fullData = listOfNotNull(shopText, namesText, labelText).joinToString(" ").replace("\"\"", "\"")
                     clipboard.setPrimaryClip(ClipData.newPlainText("Повні дані", fullData))
                 })
                 DropdownMenuItem(text = { Text("Коротко") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.ShortText, null) }, onClick = {
@@ -336,7 +405,7 @@ fun ClientCard(
                     val shopText = if (shopClean.isNotBlank()) "\"$shopClean\"" else null
                     val shortNamesText = clientWithDetails.names.map { formatShortName(it.fullName) }.filter { it.isNotBlank() }.joinToString(" ").ifBlank { null }
                     val labelText = client.label?.trim()?.ifBlank { null }
-                    val shortData = listOfNotNull(shopText, shortNamesText, labelText).joinToString(" ")
+                    val shortData = listOfNotNull(shopText, shortNamesText, labelText).joinToString(" ").replace("\"\"", "\"")
                     clipboard.setPrimaryClip(ClipData.newPlainText("Коротко", shortData))
                 })
             }

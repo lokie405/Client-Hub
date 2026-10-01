@@ -28,12 +28,21 @@ import java.util.Date
 import java.util.Locale
 import org.apache.poi.ss.usermodel.*
 
+data class ImportedRouteClient(
+    val clientId: Long,
+    val label: String,
+    val shopName: String,
+    val city: String?,
+    val name: String
+)
+
 data class ImportResult(
     val success: Boolean,
     val message: String,
     val added: List<String> = emptyList(),
     val updated: List<String> = emptyList(),
-    val logs: List<UpdateLogEntry> = emptyList()
+    val logs: List<UpdateLogEntry> = emptyList(),
+    val routeClients: List<ImportedRouteClient> = emptyList()
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -62,6 +71,109 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
         }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val logSessions: Flow<List<UpdateLogSession>> = clientDao.getAllLogSessions()
+
+    val activeRouteSheet: StateFlow<RouteSheetWithItems?> = clientDao.getActiveRouteSheet()
+        .stateIn(viewModelScope, SharingStarted.Lazily, null)
+
+    val allRouteSheets: Flow<List<RouteSheetWithItems>> = clientDao.getAllRouteSheetsWithItems()
+
+    init {
+        checkAndArchiveMidnightRoutes()
+    }
+
+    fun checkAndArchiveMidnightRoutes() {
+        // Auto-archiving at 00:00 disabled per user request.
+        // Route sheets are now preserved until a new route file is imported.
+    }
+
+    fun archiveActiveRouteSheet() {
+        viewModelScope.launch {
+            clientDao.archiveActiveRouteSheet()
+        }
+    }
+
+    fun createRouteSheet(clients: List<ImportedRouteClient>, savePreviousToJournal: Boolean = true) {
+        if (clients.isEmpty()) return
+        viewModelScope.launch {
+            val active = clientDao.getActiveRouteSheet().first()
+            if (active != null) {
+                if (savePreviousToJournal) {
+                    clientDao.archiveActiveRouteSheet()
+                } else {
+                    clientDao.deleteRouteSheetItems(active.routeSheet.id)
+                    clientDao.deleteRouteSheet(active.routeSheet.id)
+                }
+            }
+            val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+            val routeSheetId = clientDao.insertRouteSheet(
+                RouteSheetEntity(
+                    dateString = today,
+                    createdTimestamp = System.currentTimeMillis(),
+                    isArchived = false
+                )
+            )
+            val items = clients.mapIndexed { index, c ->
+                RouteSheetItemEntity(
+                    routeSheetId = routeSheetId,
+                    clientId = c.clientId,
+                    orderIndex = index,
+                    clientLabelSnapshot = c.label,
+                    clientShopSnapshot = c.shopName,
+                    clientCitySnapshot = c.city,
+                    clientNameSnapshot = c.name
+                )
+            }
+            clientDao.insertRouteSheetItems(items)
+        }
+    }
+
+    fun reorderRouteItems(items: List<RouteSheetItemEntity>) {
+        viewModelScope.launch {
+            val updated = items.mapIndexed { index, item -> item.copy(orderIndex = index) }
+            clientDao.updateRouteSheetItems(updated)
+        }
+    }
+
+    fun moveRouteItemUp(items: List<RouteSheetItemEntity>, index: Int) {
+        if (index <= 0 || index >= items.size) return
+        val list = items.toMutableList()
+        val item = list.removeAt(index)
+        list.add(index - 1, item)
+        reorderRouteItems(list)
+    }
+
+    fun moveRouteItemDown(items: List<RouteSheetItemEntity>, index: Int) {
+        if (index < 0 || index >= items.size - 1) return
+        val list = items.toMutableList()
+        val item = list.removeAt(index)
+        list.add(index + 1, item)
+        reorderRouteItems(list)
+    }
+
+    fun updateRouteItemNote(
+        item: RouteSheetItemEntity,
+        noteText: String,
+        audioUri: String? = item.noteAudioUri,
+        photoUri: String? = item.notePhotoUri,
+        fileUri: String? = item.noteFileUri
+    ) {
+        viewModelScope.launch {
+            val updated = item.copy(
+                noteText = noteText,
+                noteAudioUri = audioUri,
+                notePhotoUri = photoUri,
+                noteFileUri = fileUri
+            )
+            clientDao.updateRouteSheetItem(updated)
+        }
+    }
+
+    fun deleteRouteSheet(routeSheetId: Long) {
+        viewModelScope.launch {
+            clientDao.deleteRouteSheetItems(routeSheetId)
+            clientDao.deleteRouteSheet(routeSheetId)
+        }
+    }
 
     suspend fun getLogEntries(sessionId: Long): List<UpdateLogEntry> = clientDao.getLogEntriesForSession(sessionId)
 
@@ -211,6 +323,7 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     val ciI = getI("Населений пункт"); val shI = getI("Найменування ТРТ"); val clI = getI("Клієнт"); val adI = getI("Адреса"); val noI = getI("Примітка"); val phI = getI("Телефон")
                     val anyIdRegex = Regex("""([A-ZА-ЯІЇЄҐ]\d{1,3})|(\d{1,3}[A-ZА-ЯІЇЄҐ])""")
                     val added = mutableListOf<String>(); val currentLogs = mutableListOf<UpdateLogEntry>()
+                    val importedRouteClients = mutableListOf<ImportedRouteClient>()
                     val allClients = clientDao.getAllClients().first()
                     val existingDNumbers = allClients.mapNotNull { Regex("""^D(\d+)D$""", RegexOption.IGNORE_CASE).find(it.client.label ?: "")?.groupValues?.get(1)?.toIntOrNull() }
                     var dCount = maxOf(allClients.count { it.client.label?.uppercase()?.startsWith("D") == true }, existingDNumbers.maxOrNull() ?: 0)
@@ -218,28 +331,46 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     for (i in (hIdx + 1) until sheet.physicalNumberOfRows) {
                         val row = sheet.getRow(i) ?: continue; val nc = fmt.formatCellValue(row.getCell(noI)).trim()
                         val m = anyIdRegex.find(nc)
-                        val label: String
-                        val en: String
-                        if (m != null) {
-                            label = m.value.trim().uppercase()
-                            en = nc.replace(m.value, "").trim().trim(',', '.', ';', ' ', ':', '-', '—')
-                        } else {
-                            dCount++
-                            label = "D${dCount}D"
-                            en = nc.trim().trim(',', '.', ';', ' ', ':', '-', '—')
-                        }
-
                         val city = fmt.formatCellValue(row.getCell(ciI)).trim(); val shop = fmt.formatCellValue(row.getCell(shI)).trim()
                         val name = fmt.formatCellValue(row.getCell(clI)).trim(); val addr = fmt.formatCellValue(row.getCell(adI)).trim()
                         val phones = fmt.formatCellValue(row.getCell(phI)).trim().split("\n", "\r", ",", ";").map { it.replace(Regex("[^0-9+]"), "") }.filter { it.isNotBlank() }.distinct().sorted()
                         if (name.isBlank() && shop.isBlank()) continue
-                        val existing = clientDao.getClientByLabel(label)
+
+                        val label: String
+                        val en: String
+                        val existing: ClientWithDetails?
+
+                        if (m != null) {
+                            label = m.value.trim().uppercase()
+                            en = nc.replace(m.value, "").trim().trim(',', '.', ';', ' ', ':', '-', '—')
+                            existing = clientDao.getClientByLabel(label)
+                        } else {
+                            en = nc.trim().trim(',', '.', ';', ' ', ':', '-', '—')
+                            // Check database for duplicate by 3 matching fields: Name, City, Shop Name
+                            val duplicate = allClients.firstOrNull { c ->
+                                val shopMatch = c.client.shopName.trim().equals(shop.trim(), ignoreCase = true)
+                                val cityMatch = (c.client.city ?: "").trim().equals(city.trim(), ignoreCase = true)
+                                val nameMatch = c.names.any { it.fullName.trim().equals(name.trim(), ignoreCase = true) }
+                                shopMatch && cityMatch && nameMatch
+                            }
+                            if (duplicate != null) {
+                                existing = duplicate
+                                label = duplicate.client.label ?: ""
+                            } else {
+                                existing = null
+                                dCount++
+                                label = "D${dCount}D"
+                            }
+                        }
+
                         if (existing == null) {
                             val nid = clientDao.insertClient(ClientEntity(shopName = shop, city = city.ifBlank { null }, addressManual = addr.ifBlank { null }, addressStatus = if (addr.isNotBlank()) "changed" else "changed", label = label))
                             clientDao.insertName(NameEntity(clientId = nid, fullName = name)); phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = nid, phoneNumber = p)) }
                             if (en.isNotBlank()) clientDao.insertNote(NoteEntity(clientId = nid, content = en))
                             added.add("[$label] $shop")
+                            importedRouteClients.add(ImportedRouteClient(nid, label, shop, city.ifBlank { null }, name))
                         } else {
+                            importedRouteClients.add(ImportedRouteClient(existing.client.id, label, shop, city.ifBlank { null }, name))
                             var cur = existing.client; var changed = false; val mainName = existing.names.firstOrNull()?.fullName ?: ""
                             if (cur.namesStatus == "changed" && name != mainName && !name.contains("ФОП", true) && existing.names.none { it.fullName.trim() == name.trim() }) { clientDao.insertName(NameEntity(clientId = cur.id, fullName = name)); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "names", mainName, "Додано: $name")); changed = true }
                             if (cur.shopNameStatus == "changed" && shop != cur.shopName) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "shopName", cur.shopName, shop)); cur = cur.copy(shopName = shop); changed = true }
@@ -265,13 +396,14 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                                 message = "Обробка завершена", 
                                 added = added, 
                                 updated = currentLogs.map { it.clientLabel }.distinct(),
-                                logs = entriesWithId 
+                                logs = entriesWithId,
+                                routeClients = importedRouteClients
                             )) 
                         }
                     } else {
                         autoExportData()
                         withContext(Dispatchers.Main) { 
-                            onResult(ImportResult(true, "Обробка завершена", added, emptyList(), emptyList())) 
+                            onResult(ImportResult(true, "Обробка завершена", added, emptyList(), emptyList(), importedRouteClients)) 
                         }
                     }
                 }
