@@ -134,7 +134,10 @@ data class RouteSheetItemEntity(
     val noteText: String = "",
     val noteAudioUri: String? = null,
     val notePhotoUri: String? = null,
-    val noteFileUri: String? = null
+    val noteFileUri: String? = null,
+    val orderNumber: String = "",
+    val weightKg: Double = 0.0,
+    val amountSum: Double = 0.0
 )
 
 data class RouteSheetWithItems(

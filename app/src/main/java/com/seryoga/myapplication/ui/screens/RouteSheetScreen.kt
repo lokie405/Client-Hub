@@ -1,5 +1,7 @@
 package com.seryoga.myapplication.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.media.MediaPlayer
@@ -10,6 +12,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,20 +26,27 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.automirrored.filled.Comment
+import androidx.compose.material.icons.automirrored.filled.ShortText
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -44,7 +56,20 @@ import com.seryoga.myapplication.ui.ClientViewModel
 import sh.calvin.reorderable.ReorderableCollectionItemScope
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
+import java.text.DecimalFormat
+import java.text.DecimalFormatSymbols
 import java.util.Locale
+
+fun formatNumberWithSpaces(number: Double, isCurrency: Boolean = false): String {
+    if (number <= 0) return ""
+    val symbols = DecimalFormatSymbols(Locale.US).apply {
+        groupingSeparator = ' '
+    }
+    val pattern = if (number % 1.0 == 0.0) "#,##0" else "#,##0.00"
+    val formatter = DecimalFormat(pattern, symbols)
+    val formatted = formatter.format(number)
+    return if (isCurrency) "$formatted грн" else "$formatted кг"
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,7 +79,9 @@ fun RouteSheetScreen(
 ) {
     val activeRouteSheet by viewModel.activeRouteSheet.collectAsState()
     var selectedItemForNote by remember { mutableStateOf<RouteSheetItemEntity?>(null) }
+    var selectedItemIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var swapItemData by remember { mutableStateOf<Pair<RouteSheetItemEntity, Int>?>(null) }
+    var isLocked by remember { mutableStateOf(false) }
 
     val items = remember(activeRouteSheet) {
         activeRouteSheet?.items?.sortedBy { it.orderIndex } ?: emptyList()
@@ -107,25 +134,56 @@ fun RouteSheetScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("Маршрутник", fontWeight = FontWeight.Bold)
-                        activeRouteSheet?.routeSheet?.dateString?.let { date ->
-                            Text("Дата: $date", style = MaterialTheme.typography.labelSmall)
+            if (selectedItemIds.isNotEmpty()) {
+                TopAppBar(
+                    title = {
+                        Text("Виділено: ${selectedItemIds.size}", fontWeight = FontWeight.Bold)
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { selectedItemIds = emptySet() }) {
+                            Icon(Icons.Default.Close, "Очистити виділення")
                         }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    },
+                    actions = {
+                        IconButton(onClick = { selectedItemIds = localItems.map { it.id }.toSet() }) {
+                            Icon(Icons.Default.SelectAll, "Виділити все")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        titleContentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
                 )
-            )
+            } else {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text("Маршрутник", fontWeight = FontWeight.Bold)
+                            activeRouteSheet?.routeSheet?.dateString?.let { date ->
+                                Text("Дата: $date", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { isLocked = !isLocked }) {
+                            Icon(
+                                if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                contentDescription = if (isLocked) "Розблокувати" else "Заблокувати",
+                                tint = if (isLocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                )
+            }
         }
     ) { padding ->
         Box(
@@ -145,33 +203,81 @@ fun RouteSheetScreen(
                     )
                 }
             } else {
-                LazyColumn(
-                    state = lazyListState,
-                    contentPadding = PaddingValues(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(localItems, key = { it.id }) { item ->
-                        ReorderableItem(reorderableState, key = item.id) { isDragging ->
-                            val index = localItems.indexOf(item)
-                            RouteItemCard(
-                                reorderableScope = this,
-                                index = if (index >= 0) index else 0,
-                                totalCount = localItems.size,
-                                item = item,
-                                isDragging = isDragging,
-                                onDoubleTapNumber = {
-                                    swapItemData = item to if (index >= 0) index else 0
-                                },
-                                onMoveUp = {
-                                    val idx = localItems.indexOf(item)
-                                    if (idx > 0) viewModel.moveRouteItemUp(localItems, idx)
-                                },
-                                onMoveDown = {
-                                    val idx = localItems.indexOf(item)
-                                    if (idx in 0 until localItems.size - 1) viewModel.moveRouteItemDown(localItems, idx)
-                                },
-                                onEditNote = { selectedItemForNote = item }
-                            )
+                Column(modifier = Modifier.fillMaxSize()) {
+                    val totalWeightKg = localItems.sumOf { it.weightKg }
+                    val totalAmountSum = localItems.sumOf { it.amountSum }
+
+                    if (totalWeightKg > 0 || totalAmountSum > 0) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Позицій: ${localItems.size}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                if (totalWeightKg > 0) {
+                                    Text(
+                                        text = "Вага: ${formatNumberWithSpaces(totalWeightKg, false)}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                if (totalAmountSum > 0) {
+                                    Text(
+                                        text = "Сума: ${formatNumberWithSpaces(totalAmountSum, true)}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF2E7D32)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    LazyColumn(
+                        state = lazyListState,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(localItems, key = { it.id }) { item ->
+                            ReorderableItem(reorderableState, key = item.id, enabled = !isLocked) { isDragging ->
+                                val index = localItems.indexOf(item)
+                                val isSelected = selectedItemIds.contains(item.id)
+
+                                RouteItemCard(
+                                    reorderableScope = this,
+                                    index = if (index >= 0) index else 0,
+                                    item = item,
+                                    isDragging = isDragging,
+                                    isSelected = isSelected,
+                                    hasSelectionMode = selectedItemIds.isNotEmpty(),
+                                    isLocked = isLocked,
+                                    onToggleSelect = {
+                                        selectedItemIds = if (isSelected) selectedItemIds - item.id else selectedItemIds + item.id
+                                    },
+                                    onLongPressNumber = {
+                                        selectedItemIds = if (isSelected) selectedItemIds - item.id else selectedItemIds + item.id
+                                    },
+                                    onDoubleTapNumber = {
+                                        if (!isLocked) {
+                                            swapItemData = item to if (index >= 0) index else 0
+                                        }
+                                    },
+                                    onEditNote = { selectedItemForNote = item }
+                                )
+                            }
                         }
                     }
                 }
@@ -180,19 +286,24 @@ fun RouteSheetScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RouteItemCard(
     reorderableScope: ReorderableCollectionItemScope,
     index: Int,
-    totalCount: Int,
     item: RouteSheetItemEntity,
     isDragging: Boolean,
+    isSelected: Boolean,
+    hasSelectionMode: Boolean,
+    isLocked: Boolean,
+    onToggleSelect: () -> Unit,
+    onLongPressNumber: () -> Unit,
     onDoubleTapNumber: () -> Unit,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
     onEditNote: () -> Unit
 ) {
+    val context = LocalContext.current
     val hasNote = item.noteText.isNotBlank() || item.noteAudioUri != null || item.notePhotoUri != null || item.noteFileUri != null
+    var showContextMenu by remember { mutableStateOf(false) }
 
     val elevation by animateDpAsState(if (isDragging) 8.dp else 2.dp, label = "elevation")
     val scale by animateFloatAsState(if (isDragging) 1.03f else 1f, label = "scale")
@@ -203,84 +314,193 @@ fun RouteItemCard(
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
-            },
+            }
+            .combinedClickable(
+                onClick = {
+                    if (hasSelectionMode) {
+                        onToggleSelect()
+                    }
+                },
+                onLongClick = {
+                    if (!hasSelectionMode) {
+                        showContextMenu = true
+                    }
+                }
+            )
+            .then(
+                if (isSelected) Modifier.border(
+                    width = 2.5.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = RoundedCornerShape(16.dp)
+                ) else Modifier
+            ),
+        shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = elevation),
         colors = CardDefaults.cardColors(
-            containerColor = if (isDragging) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f) else MaterialTheme.colorScheme.surface
+            containerColor = when {
+                isDragging -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f)
+                isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                else -> MaterialTheme.colorScheme.surface
+            }
         )
     ) {
-        Row(
-            modifier = Modifier
-                .padding(12.dp)
-                .fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Number badge with Double Tap Swap Dialog
-            Surface(
+        Box {
+            Column(
                 modifier = Modifier
-                    .size(38.dp)
-                    .pointerInput(item.id, index) {
-                        detectTapGestures(
-                            onDoubleTap = { onDoubleTapNumber() }
-                        )
-                    },
-                shape = RoundedCornerShape(10.dp),
-                color = if (isDragging) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer,
-                tonalElevation = 4.dp
+                    .padding(12.dp)
+                    .fillMaxWidth()
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "${index + 1}",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = if (isDragging) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onPrimaryContainer,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (item.clientLabelSnapshot.isNotBlank()) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
-                            shape = MaterialTheme.shapes.extraSmall,
-                            modifier = Modifier.padding(end = 6.dp)
-                        ) {
-                            Text(
-                                text = item.clientLabelSnapshot,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer
-                            )
+                // Top Row: Number Badge + (City & Shop Name) + (Label & Icons)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    // Number Badge (Top-Left)
+                    Surface(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .pointerInput(item.id, index) {
+                                detectTapGestures(
+                                    onDoubleTap = { onDoubleTapNumber() },
+                                    onLongPress = { onLongPressNumber() },
+                                    onTap = {
+                                        if (hasSelectionMode) {
+                                            onToggleSelect()
+                                        }
+                                    }
+                                )
+                            },
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isSelected || isDragging) MaterialTheme.colorScheme.primary else Color(0xFF616161),
+                        tonalElevation = 4.dp
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (isSelected && !isDragging) {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = "Виділено",
+                                    tint = Color.White
+                                )
+                            } else {
+                                Text(
+                                    text = "${index + 1}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
-                    Text(
-                        text = item.clientShopSnapshot,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    // City (Blue) & Shop Name Column
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (!item.clientCitySnapshot.isNullOrBlank()) item.clientCitySnapshot else "—",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF448AFF),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        Spacer(modifier = Modifier.height(2.dp))
+
+                        Text(
+                            text = item.clientShopSnapshot,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // Right Column: Label ("Мітка") & Icons
+                    Column(horizontalAlignment = Alignment.End) {
+                        if (item.clientLabelSnapshot.isNotBlank()) {
+                            Text(
+                                text = item.clientLabelSnapshot,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = onEditNote,
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (hasNote) Icons.AutoMirrored.Filled.Comment else Icons.Default.AddComment,
+                                    contentDescription = "Нотатка",
+                                    tint = if (hasNote) Color(0xFF2196F3) else MaterialTheme.colorScheme.outline
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(4.dp))
+
+                            with(reorderableScope) {
+                                IconButton(
+                                    onClick = {},
+                                    enabled = !isLocked,
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .then(if (!isLocked) Modifier.draggableHandle() else Modifier)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Menu,
+                                        contentDescription = if (isLocked) "Заблоковано" else "Перетягнути",
+                                        modifier = Modifier.size(26.dp),
+                                        tint = if (isLocked) MaterialTheme.colorScheme.error.copy(alpha = 0.6f) else if (isDragging) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
 
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Middle Row: Client Name ("Клієнт")
                 if (item.clientNameSnapshot.isNotBlank()) {
                     Text(
                         text = item.clientNameSnapshot,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.secondary,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                if (!item.clientCitySnapshot.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Bottom Row: "Вага, кг" & "Сума, грн"
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val weightText = if (item.weightKg > 0) formatNumberWithSpaces(item.weightKg, isCurrency = false) else "— кг"
                     Text(
-                        text = item.clientCitySnapshot,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = weightText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    val amountText = if (item.amountSum > 0) formatNumberWithSpaces(item.amountSum, isCurrency = true) else "— грн"
+                    Text(
+                        text = amountText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
 
@@ -296,57 +516,78 @@ fun RouteItemCard(
                 }
             }
 
-            // Note button, Move Up/Down buttons & Drag handle with .draggableHandle()
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onEditNote) {
-                    Icon(
-                        imageVector = if (hasNote) Icons.AutoMirrored.Filled.Comment else Icons.Default.AddComment,
-                        contentDescription = "Нотатка",
-                        tint = if (hasNote) Color(0xFF2196F3) else MaterialTheme.colorScheme.outline
-                    )
-                }
-
-                Column {
-                    IconButton(
-                        onClick = onMoveUp,
-                        enabled = index > 0,
-                        modifier = Modifier.size(24.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.KeyboardArrowUp,
-                            contentDescription = "Вгору",
-                            tint = if (index > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-                        )
-                    }
-                    IconButton(
-                        onClick = onMoveDown,
-                        enabled = index < totalCount - 1,
-                        modifier = Modifier.size(24.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.KeyboardArrowDown,
-                            contentDescription = "Вниз",
-                            tint = if (index < totalCount - 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-                        )
-                    }
-                }
-
-                // Drag handle with .draggableHandle() from calvin-ll/reorderable
-                with(reorderableScope) {
-                    IconButton(
+            DropdownMenu(
+                expanded = showContextMenu,
+                onDismissRequest = { showContextMenu = false }
+            ) {
+                if (item.orderNumber.isNotBlank()) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = "Заявка № ${item.orderNumber}",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        enabled = false,
                         onClick = {},
-                        modifier = Modifier
-                            .padding(start = 4.dp)
-                            .size(38.dp)
-                            .draggableHandle()
-                    ) {
-                        Icon(
-                            Icons.Default.Menu,
-                            contentDescription = "Перетягнути",
-                            tint = if (isDragging) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                        )
-                    }
+                        leadingIcon = {
+                            Icon(Icons.Default.Receipt, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        }
+                    )
+                    HorizontalDivider()
                 }
+
+                DropdownMenuItem(
+                    text = { Text("Поділитись") },
+                    leadingIcon = { Icon(Icons.Default.Share, null) },
+                    onClick = {
+                        showContextMenu = false
+                        val shopClean = cleanTextForCopy(item.clientShopSnapshot)
+                        val namesClean = cleanTextForCopy(item.clientNameSnapshot)
+                        val shareText = "Магазин: $shopClean\nКлієнт: $namesClean\nМісто: ${item.clientCitySnapshot ?: ""}".replace("\"\"", "\"")
+                        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { putExtra(Intent.EXTRA_TEXT, shareText); type = "text/plain" }, null))
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("ПІБ") },
+                    leadingIcon = { Icon(Icons.Default.Person, null) },
+                    onClick = {
+                        showContextMenu = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val namesText = cleanTextForCopy(item.clientNameSnapshot).replace("\"\"", "\"")
+                        clipboard.setPrimaryClip(ClipData.newPlainText("ПІБ", namesText))
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Повні дані") },
+                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.Assignment, null) },
+                    onClick = {
+                        showContextMenu = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val shopClean = cleanTextForCopy(item.clientShopSnapshot)
+                        val shopText = if (shopClean.isNotBlank()) "\"$shopClean\"" else null
+                        val namesText = cleanTextForCopy(item.clientNameSnapshot).ifBlank { null }
+                        val labelText = item.clientLabelSnapshot.ifBlank { null }
+                        val fullData = listOfNotNull(shopText, namesText, labelText).joinToString(" ").replace("\"\"", "\"")
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Повні дані", fullData))
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Коротко") },
+                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.ShortText, null) },
+                    onClick = {
+                        showContextMenu = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val shopClean = cleanTextForCopy(item.clientShopSnapshot)
+                        val shopText = if (shopClean.isNotBlank()) "\"$shopClean\"" else null
+                        val shortNamesText = formatShortName(item.clientNameSnapshot).ifBlank { null }
+                        val labelText = item.clientLabelSnapshot.ifBlank { null }
+                        val shortData = listOfNotNull(shopText, shortNamesText, labelText).joinToString(" ").replace("\"\"", "\"")
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Коротко", shortData))
+                    }
+                )
             }
         }
     }
@@ -360,8 +601,24 @@ fun SwapNumberDialog(
     onDismiss: () -> Unit,
     onConfirmSwap: (targetIndex: Int) -> Unit
 ) {
-    var inputText by remember { mutableStateOf("${currentIndex + 1}") }
+    val initialText = "${currentIndex + 1}"
+    var textFieldValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = initialText,
+                selection = TextRange(0, initialText.length)
+            )
+        )
+    }
     var isError by remember { mutableStateOf(false) }
+
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+        keyboardController?.show()
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -374,16 +631,19 @@ fun SwapNumberDialog(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
-                    value = inputText,
-                    onValueChange = {
-                        inputText = it.filter { c -> c.isDigit() }
+                    value = textFieldValue,
+                    onValueChange = { newValue ->
+                        val digitsOnly = newValue.text.filter { c -> c.isDigit() }
+                        textFieldValue = newValue.copy(text = digitsOnly)
                         isError = false
                     },
                     label = { Text("Новий порядковий номер (1..$totalCount)") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     isError = isError,
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester)
                 )
                 if (isError) {
                     Text(
@@ -397,7 +657,7 @@ fun SwapNumberDialog(
         },
         confirmButton = {
             Button(onClick = {
-                val num = inputText.toIntOrNull()
+                val num = textFieldValue.text.toIntOrNull()
                 if (num != null && num in 1..totalCount) {
                     onConfirmSwap(num - 1)
                 } else {

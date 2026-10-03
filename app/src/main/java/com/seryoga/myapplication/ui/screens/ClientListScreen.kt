@@ -28,6 +28,7 @@ import androidx.compose.material.icons.automirrored.filled.Comment
 import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.automirrored.filled.ShortText
 import androidx.compose.material.icons.filled.*
+import java.util.Locale
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -198,6 +199,22 @@ fun ClientListScreen(
                                         Text("Нове: ${log.newValue}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF4CAF50))
                                     }
                                 }
+                            }
+                        }
+                        if (importResult!!.routeClients.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Останні 3 позиції маршрутника:", fontWeight = FontWeight.Bold)
+                            val last3 = importResult!!.routeClients.takeLast(3)
+                            last3.forEachIndexed { idx, item ->
+                                val pos = importResult!!.routeClients.size - last3.size + idx + 1
+                                val wText = if (item.weightKg > 0) "${if (item.weightKg % 1.0 == 0.0) item.weightKg.toInt().toString() else String.format(Locale.US, "%.1f", item.weightKg)} кг" else "0 кг"
+                                val sText = if (item.amountSum > 0) "${if (item.amountSum % 1.0 == 0.0) item.amountSum.toInt().toString() else String.format(Locale.US, "%.2f", item.amountSum)} грн" else "0 грн"
+                                val ordText = if (item.orderNumber.isNotBlank()) "№${item.orderNumber}" else "№—"
+
+                                Text(
+                                    text = "• Рядок #$pos: ${item.shopName} | $ordText | $wText | $sText",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
                             }
                         }
                     }

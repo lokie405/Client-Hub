@@ -6,6 +6,7 @@ import android.location.Geocoder
 import android.net.Uri
 import android.os.Environment
 import android.provider.CallLog
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.android.gms.location.LocationServices
@@ -33,7 +34,10 @@ data class ImportedRouteClient(
     val label: String,
     val shopName: String,
     val city: String?,
-    val name: String
+    val name: String,
+    val orderNumber: String = "",
+    val weightKg: Double = 0.0,
+    val amountSum: Double = 0.0
 )
 
 data class ImportResult(
@@ -120,7 +124,10 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     clientLabelSnapshot = c.label,
                     clientShopSnapshot = c.shopName,
                     clientCitySnapshot = c.city,
-                    clientNameSnapshot = c.name
+                    clientNameSnapshot = c.name,
+                    orderNumber = c.orderNumber,
+                    weightKg = c.weightKg,
+                    amountSum = c.amountSum
                 )
             }
             clientDao.insertRouteSheetItems(items)
@@ -316,11 +323,79 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     val workbook = WorkbookFactory.create(input); val sheet = workbook.getSheetAt(0); val fmt = DataFormatter()
                     var isRS = false; for (i in 0 until minOf(7, sheet.physicalNumberOfRows)) { val row = sheet.getRow(i) ?: continue; for (j in 0 until row.lastCellNum.toInt()) { if (fmt.formatCellValue(row.getCell(j)).contains("Маршрутний лист", true)) { isRS = true; break } }; if (isRS) break }
                     if (!isRS) return@withContext withContext(Dispatchers.Main) { onResult(ImportResult(false, "Файл не є маршрутним листом")) }
-                    var hIdx = -1; val req = listOf("№ з/п", "№ заявки", "Населений пункт", "Найменування ТРТ", "Клієнт", "Адреса", "Примітка", "Телефон")
-                    val idxs = mutableMapOf<String, Int>(); for (i in 0 until minOf(20, sheet.physicalNumberOfRows)) { val row = sheet.getRow(i) ?: continue; var fc = 0; for (j in 0 until row.lastCellNum.toInt()) { val cv = fmt.formatCellValue(row.getCell(j)).trim(); if (req.any { it.equals(cv, true) }) { idxs[cv.lowercase()] = j; fc++ } }; if (fc >= 5) { hIdx = i; break } }
-                    if (hIdx == -1) return@withContext withContext(Dispatchers.Main) { onResult(ImportResult(false, "Не знайдено стовпці")) }
-                    fun getI(n: String) = idxs[n.lowercase()] ?: -1
-                    val ciI = getI("Населений пункт"); val shI = getI("Найменування ТРТ"); val clI = getI("Клієнт"); val adI = getI("Адреса"); val noI = getI("Примітка"); val phI = getI("Телефон")
+                    var hIdx = -1; val reqKeywords = listOf("з/п", "заявк", "населен", "нанайменуван", "тр т", "клієнт", "адрес", "примітк", "телефон", "брутт", "сума", "вага")
+                    for (i in 0 until minOf(25, sheet.physicalNumberOfRows)) {
+                        val row = sheet.getRow(i) ?: continue
+                        var fc = 0
+                        for (j in 0 until row.lastCellNum.toInt()) {
+                            val cv = fmt.formatCellValue(row.getCell(j)).lowercase().trim()
+                            if (reqKeywords.any { cv.contains(it) }) fc++
+                        }
+                        if (fc >= 4) { hIdx = i; break }
+                    }
+                    if (hIdx == -1) return@withContext withContext(Dispatchers.Main) { onResult(ImportResult(false, "Не знайдено стовпці в таблиці")) }
+
+                    val mainHeaderRow = sheet.getRow(hIdx)
+                    val nextRow = sheet.getRow(hIdx + 1)
+                    val nextRowKeywords = listOf("брутт", "сума", "вага", "тн", "грн")
+                    val hasSubHeader = nextRow != null && (0 until nextRow.lastCellNum.toInt()).any { j ->
+                        val valSub = fmt.formatCellValue(nextRow.getCell(j)).lowercase().trim()
+                        nextRowKeywords.any { valSub.contains(it) }
+                    }
+
+                    val dataStartRowIdx = if (hasSubHeader) hIdx + 2 else hIdx + 1
+                    val maxCols = maxOf(mainHeaderRow?.lastCellNum?.toInt() ?: 0, nextRow?.lastCellNum?.toInt() ?: 0)
+                    val combinedHeaders = (0 until maxCols).map { j ->
+                        val topVal = fmt.formatCellValue(mainHeaderRow?.getCell(j)).trim()
+                        val subVal = if (hasSubHeader) fmt.formatCellValue(nextRow?.getCell(j)).trim() else ""
+                        val full = listOfNotNull(topVal.ifBlank { null }, subVal.ifBlank { null }).joinToString(" ")
+                        j to full
+                    }
+
+                    Log.d("ExcelHeaders", "=== ЗАГОЛОВКИ ТАБЛИЦІ (Рядок $hIdx, 2-рядкова шапка: $hasSubHeader) ===")
+                    Log.d("ExcelHeaders", "Усі об'єднані стовпці: ${combinedHeaders.joinToString { "[${it.first}]: '${it.second}'" }}")
+
+                    fun findColIndex(vararg keywords: String): Int {
+                        for ((colIdx, headerText) in combinedHeaders) {
+                            val lowerText = headerText.lowercase()
+                            for (kw in keywords) {
+                                if (lowerText.contains(kw.lowercase())) return colIdx
+                            }
+                        }
+                        return -1
+                    }
+
+                    fun parseCleanDouble(raw: String): Double {
+                        if (raw.isBlank()) return 0.0
+                        val cleaned = raw.replace("\u00A0", "").replace(" ", "").replace(",", ".").replace(Regex("[^0-9.-]"), "")
+                        return cleaned.toDoubleOrNull() ?: 0.0
+                    }
+
+                    fun parseNumericCellValue(cell: Cell?): Double {
+                        if (cell == null) return 0.0
+                        return try {
+                            when (cell.cellType) {
+                                CellType.NUMERIC -> cell.numericCellValue
+                                CellType.FORMULA -> {
+                                    try { cell.numericCellValue } catch (_: Exception) { parseCleanDouble(fmt.formatCellValue(cell)) }
+                                }
+                                else -> parseCleanDouble(fmt.formatCellValue(cell))
+                            }
+                        } catch (_: Exception) { 0.0 }
+                    }
+
+                    val ciI = findColIndex("населен", "місто")
+                    val shI = findColIndex("найменуван", "трт", "магазин")
+                    val clI = findColIndex("клієнт", "піб")
+                    val adI = findColIndex("адрес")
+                    val noI = findColIndex("примітк")
+                    val phI = findColIndex("телефон")
+                    val ordI = findColIndex("заявк", "накладн")
+                    val wtI = findColIndex("брутт", "вага")
+                    val sumI = findColIndex("сума", "вартість", "ціна")
+
+                    Log.d("ExcelHeaders", "Знайдені індекси: Вага (Брутто)=$wtI, Сума=$sumI, №Заявки=$ordI, ТРТ=$shI, Клієнт=$clI, Місто=$ciI")
+
                     val anyIdRegex = Regex("""([A-ZА-ЯІЇЄҐ]\d{1,3})|(\d{1,3}[A-ZА-ЯІЇЄҐ])""")
                     val added = mutableListOf<String>(); val currentLogs = mutableListOf<UpdateLogEntry>()
                     val importedRouteClients = mutableListOf<ImportedRouteClient>()
@@ -328,12 +403,20 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     val existingDNumbers = allClients.mapNotNull { Regex("""^D(\d+)D$""", RegexOption.IGNORE_CASE).find(it.client.label ?: "")?.groupValues?.get(1)?.toIntOrNull() }
                     var dCount = maxOf(allClients.count { it.client.label?.uppercase()?.startsWith("D") == true }, existingDNumbers.maxOrNull() ?: 0)
 
-                    for (i in (hIdx + 1) until sheet.physicalNumberOfRows) {
-                        val row = sheet.getRow(i) ?: continue; val nc = fmt.formatCellValue(row.getCell(noI)).trim()
+                    for (i in dataStartRowIdx until sheet.physicalNumberOfRows) {
+                        val row = sheet.getRow(i) ?: continue; val nc = if (noI != -1) fmt.formatCellValue(row.getCell(noI)).trim() else ""
                         val m = anyIdRegex.find(nc)
-                        val city = fmt.formatCellValue(row.getCell(ciI)).trim(); val shop = fmt.formatCellValue(row.getCell(shI)).trim()
-                        val name = fmt.formatCellValue(row.getCell(clI)).trim(); val addr = fmt.formatCellValue(row.getCell(adI)).trim()
-                        val phones = fmt.formatCellValue(row.getCell(phI)).trim().split("\n", "\r", ",", ";").map { it.replace(Regex("[^0-9+]"), "") }.filter { it.isNotBlank() }.distinct().sorted()
+                        val city = if (ciI != -1) fmt.formatCellValue(row.getCell(ciI)).trim() else ""
+                        val shop = if (shI != -1) fmt.formatCellValue(row.getCell(shI)).trim() else ""
+                        val name = if (clI != -1) fmt.formatCellValue(row.getCell(clI)).trim() else ""
+                        val addr = if (adI != -1) fmt.formatCellValue(row.getCell(adI)).trim() else ""
+                        val phones = if (phI != -1) fmt.formatCellValue(row.getCell(phI)).trim().split("\n", "\r", ",", ";").map { it.replace(Regex("[^0-9+]"), "") }.filter { it.isNotBlank() }.distinct().sorted() else emptyList()
+                        val orderNumber = if (ordI != -1) fmt.formatCellValue(row.getCell(ordI)).trim() else ""
+
+                        val rawWeight = if (wtI != -1) parseNumericCellValue(row.getCell(wtI)) else 0.0
+                        val weightKg = if (rawWeight > 0.0 && rawWeight < 30.0) rawWeight * 1000.0 else rawWeight
+                        val amountSum = if (sumI != -1) parseNumericCellValue(row.getCell(sumI)) else 0.0
+
                         if (name.isBlank() && shop.isBlank()) continue
 
                         val label: String
@@ -368,9 +451,9 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                             clientDao.insertName(NameEntity(clientId = nid, fullName = name)); phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = nid, phoneNumber = p)) }
                             if (en.isNotBlank()) clientDao.insertNote(NoteEntity(clientId = nid, content = en))
                             added.add("[$label] $shop")
-                            importedRouteClients.add(ImportedRouteClient(nid, label, shop, city.ifBlank { null }, name))
+                            importedRouteClients.add(ImportedRouteClient(nid, label, shop, city.ifBlank { null }, name, orderNumber, weightKg, amountSum))
                         } else {
-                            importedRouteClients.add(ImportedRouteClient(existing.client.id, label, shop, city.ifBlank { null }, name))
+                            importedRouteClients.add(ImportedRouteClient(existing.client.id, label, shop, city.ifBlank { null }, name, orderNumber, weightKg, amountSum))
                             var cur = existing.client; var changed = false; val mainName = existing.names.firstOrNull()?.fullName ?: ""
                             if (cur.namesStatus == "changed" && name != mainName && !name.contains("ФОП", true) && existing.names.none { it.fullName.trim() == name.trim() }) { clientDao.insertName(NameEntity(clientId = cur.id, fullName = name)); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "names", mainName, "Додано: $name")); changed = true }
                             if (cur.shopNameStatus == "changed" && shop != cur.shopName) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "shopName", cur.shopName, shop)); cur = cur.copy(shopName = shop); changed = true }
@@ -384,6 +467,14 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                             if (changed) clientDao.insertClient(cur)
                         }
                     }
+                    val last3 = importedRouteClients.takeLast(3)
+                    Log.d("ExcelRouteImport", "=== УСПІШНО ЗЧИТАНО РЯДКІВ: ${importedRouteClients.size} ===")
+                    Log.d("ExcelRouteImport", "Індекси стовпців: wtI=$wtI, sumI=$sumI, ordI=$ordI, ciI=$ciI, shI=$shI, clI=$clI")
+                    last3.forEachIndexed { idx, item ->
+                        val pos = importedRouteClients.size - last3.size + idx + 1
+                        Log.d("ExcelRouteImport", "Останній рядок #$pos: ТРТ='${item.shopName}', Клієнт='${item.name}', Місто='${item.city}', Заявка='${item.orderNumber}', Вага=${item.weightKg} кг, Сума=${item.amountSum} грн")
+                    }
+
                     if (currentLogs.isNotEmpty()) {
                         val sid = clientDao.insertLogSession(UpdateLogSession(timestamp = System.currentTimeMillis()))
                         val entriesWithId = currentLogs.map { it.copy(sessionId = sid) }
