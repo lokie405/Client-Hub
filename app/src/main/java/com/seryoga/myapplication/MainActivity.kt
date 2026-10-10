@@ -53,7 +53,10 @@ class MainActivity : ComponentActivity() {
                     composable("route_sheet") {
                         RouteSheetScreen(
                             viewModel = viewModel,
-                            onBack = { navController.popBackStack() }
+                            onBack = { navController.popBackStack() },
+                            onOpenClientDetail = { id ->
+                                navController.navigate("detail/$id")
+                            }
                         )
                     }
                     composable("route_journal") {

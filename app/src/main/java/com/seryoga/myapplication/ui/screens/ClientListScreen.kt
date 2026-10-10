@@ -7,10 +7,12 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.speech.RecognizerIntent
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -21,14 +23,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.AltRoute
-import androidx.compose.material.icons.automirrored.filled.CallReceived
-import androidx.compose.material.icons.automirrored.filled.CallMade
-import androidx.compose.material.icons.automirrored.filled.Label
-import androidx.compose.material.icons.automirrored.filled.Comment
 import androidx.compose.material.icons.automirrored.filled.Assignment
+import androidx.compose.material.icons.automirrored.filled.CallMade
+import androidx.compose.material.icons.automirrored.filled.CallReceived
+import androidx.compose.material.icons.automirrored.filled.Comment
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.automirrored.filled.ShortText
 import androidx.compose.material.icons.filled.*
-import java.util.Locale
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,9 +40,12 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.*
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
@@ -162,11 +166,11 @@ fun ClientListScreen(
                         viewModel.createRouteSheet(list, savePreviousToJournal = true)
                         onRouteSheetClick()
                     }) {
-                        Text("Так", fontWeight = FontWeight.Bold)
+                        Text("Створити новий маршрутник", fontWeight = FontWeight.Bold)
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { pendingRouteClients = null }) { Text("Ні") }
+                    TextButton(onClick = { pendingRouteClients = null }) { Text("Скасувати") }
                 }
             )
         }
@@ -227,7 +231,7 @@ fun ClientListScreen(
                     if (res?.success == true && res.routeClients.isNotEmpty()) {
                         pendingRouteClients = res.routeClients
                     }
-                }) { Text("ОК") }
+                }) { Text("Прийняти та скласти маршрут", fontWeight = FontWeight.Bold) }
             }
         )
     }
@@ -373,7 +377,9 @@ fun ClientCard(
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    clientWithDetails.names.forEach { name -> HighlightedText(text = name.fullName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+                    val hasCoords = !client.coordinatesManual.isNullOrBlank() || client.latitude != null
+                    val clientNameColor = if (hasCoords) Color(0xFFA5D6A7) else Color(0xFFF48FB1)
+                    clientWithDetails.names.forEach { name -> HighlightedText(text = name.fullName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = clientNameColor) }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         HighlightedText(text = client.shopName, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                         if (hasNotes) {
@@ -385,13 +391,90 @@ fun ClientCard(
                 }
                 Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.Center) {
                     if (!client.city.isNullOrBlank()) HighlightedText(text = client.city!!, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 4.dp, end = 8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         if (isLabelFilled) Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = MaterialTheme.shapes.small) { HighlightedText(text = client.label!!, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onTertiaryContainer) }
+                        IconButton(onClick = {
+                            val manualCoords = client.coordinatesManual?.trim()
+                            val extractedUrl = extractUrlFromText(manualCoords)
+                            if (extractedUrl != null) {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(extractedUrl)).apply { setPackage("com.google.android.apps.maps") }
+                                try {
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(extractedUrl)))
+                                }
+                            } else {
+                                val parsedCoords = parseCoordinates(manualCoords)
+                                val effectiveLat = parsedCoords?.first ?: client.latitude
+                                val effectiveLng = parsedCoords?.second ?: client.longitude
+
+                                val pointQuery = when {
+                                    effectiveLat != null && effectiveLng != null -> "$effectiveLat,$effectiveLng"
+                                    !manualCoords.isNullOrBlank() -> manualCoords
+                                    else -> null
+                                }
+
+                                if (!pointQuery.isNullOrBlank()) {
+                                    val cleanShop = cleanTextForCopy(client.shopName)
+                                    val cleanFirstName = clientWithDetails.names.firstOrNull()?.fullName?.let { cleanTextForCopy(it) } ?: ""
+                                    val pinLabel = listOfNotNull(cleanShop.ifBlank { null }, cleanFirstName.ifBlank { null }).joinToString(", ") + if (!client.label.isNullOrBlank()) " (${client.label})" else ""
+
+                                    val gmmUri = Uri.parse("geo:0,0?q=${Uri.encode(pointQuery)}(${Uri.encode(pinLabel)})&z=20")
+                                    val intent = Intent(Intent.ACTION_VIEW, gmmUri).apply { setPackage("com.google.android.apps.maps") }
+                                    try {
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {
+                                        val webUri = Uri.parse("https://www.google.com/maps/search/?api=1&query=${Uri.encode(pointQuery)}")
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, webUri))
+                                    }
+                                } else {
+                                    Toast.makeText(context, "У клієнта не вказано координати!", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }) {
+                            Icon(Icons.Default.Place, "Показати на карті", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                        }
                         IconButton(onClick = onCallClick) { Icon(Icons.Default.Phone, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) }
                     }
                 }
             }
-            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+                modifier = Modifier
+                    .border(
+                        width = 1.5.dp,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    .clip(RoundedCornerShape(12.dp)),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Перероб. на готівкову") },
+                    leadingIcon = { Icon(Icons.Default.Autorenew, null) },
+                    onClick = {
+                        showMenu = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val namesClean = clientWithDetails.names.map { cleanTextForCopy(it.fullName) }.filter { it.isNotBlank() }.joinToString(" ").replace("\"\"", "\"")
+                        val textToCopy = "$namesClean потрібно переробити готівкову накладну на перерахункову"
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Перероб. на готівкову", textToCopy))
+                    }
+                )
+
+                DropdownMenuItem(
+                    text = { Text("Оплатили перерах.") },
+                    leadingIcon = { Icon(Icons.Default.AttachMoney, null) },
+                    onClick = {
+                        showMenu = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val namesClean = clientWithDetails.names.map { cleanTextForCopy(it.fullName) }.filter { it.isNotBlank() }.joinToString(" ").replace("\"\"", "\"")
+                        val textToCopy = "$namesClean оплатили перерахункову накладну"
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Оплатили перерах", textToCopy))
+                    }
+                )
+                HorizontalDivider()
+
                 DropdownMenuItem(text = { Text("Поділитись") }, leadingIcon = { Icon(Icons.Default.Share, null) }, onClick = {
                     showMenu = false
                     val shopClean = cleanTextForCopy(client.shopName)

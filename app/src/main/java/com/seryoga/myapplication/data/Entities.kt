@@ -13,6 +13,7 @@ data class ClientEntity(
     val shopName: String,
     val city: String? = null,
     val addressManual: String? = null,
+    val coordinatesManual: String? = null,
     val latitude: Double? = null,
     val longitude: Double? = null,
     val label: String? = null,
@@ -137,7 +138,8 @@ data class RouteSheetItemEntity(
     val noteFileUri: String? = null,
     val orderNumber: String = "",
     val weightKg: Double = 0.0,
-    val amountSum: Double = 0.0
+    val amountSum: Double = 0.0,
+    val isCompleted: Boolean = false
 )
 
 data class RouteSheetWithItems(

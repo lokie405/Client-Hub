@@ -124,6 +124,32 @@ fun SettingsScreen(
                 }
             }
 
+            val showCityHeaders by viewModel.showCityHeadersInRouteSheet.collectAsState()
+            Text("Маршрутник", style = MaterialTheme.typography.titleMedium)
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .padding(16.dp)
+                        .fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Заголовки міст у маршрутникові", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Показувати назву міста, к-сть точок, вагу та суму перед кожним населеним пунктом у заблокованому маршрутникові",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Switch(
+                        checked = showCityHeaders,
+                        onCheckedChange = { viewModel.setShowCityHeadersInRouteSheet(it) }
+                    )
+                }
+            }
+
             Spacer(modifier = Modifier.height(8.dp))
             Text("Журнали", style = MaterialTheme.typography.titleMedium)
             Button(

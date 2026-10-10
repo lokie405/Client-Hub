@@ -65,6 +65,9 @@ interface ClientDao {
     @Query("DELETE FROM phones WHERE clientId = :clientId")
     suspend fun deletePhonesForClient(clientId: Long): Unit
 
+    @Query("DELETE FROM notes WHERE clientId = :clientId")
+    suspend fun deleteNotesForClient(clientId: Long): Unit
+
     @Query("DELETE FROM clients")
     suspend fun deleteAllClients()
 
@@ -141,7 +144,7 @@ interface ClientDao {
     suspend fun deleteRouteSheetItems(routeSheetId: Long)
 }
 
-@Database(entities = [ClientEntity::class, NameEntity::class, PhoneEntity::class, NoteEntity::class, CallLogEntity::class, UpdateLogSession::class, UpdateLogEntry::class, RouteSheetEntity::class, RouteSheetItemEntity::class], version = 12)
+@Database(entities = [ClientEntity::class, NameEntity::class, PhoneEntity::class, NoteEntity::class, CallLogEntity::class, UpdateLogSession::class, UpdateLogEntry::class, RouteSheetEntity::class, RouteSheetItemEntity::class], version = 14)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun clientDao(): ClientDao
@@ -204,6 +207,18 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE clients ADD COLUMN coordinatesManual TEXT DEFAULT NULL")
+            }
+        }
+
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE route_sheet_items ADD COLUMN isCompleted INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -211,7 +226,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "client_database"
                 )
-                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
+                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

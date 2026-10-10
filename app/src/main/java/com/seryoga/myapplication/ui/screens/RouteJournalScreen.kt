@@ -327,7 +327,7 @@ fun JournalRouteCard(
 
                                     if (item.amountSum > 0) {
                                         Surface(
-                                            color = Color(0xFFE8F5E9),
+                                            color = MaterialTheme.colorScheme.surfaceVariant,
                                             shape = RoundedCornerShape(6.dp)
                                         ) {
                                             Row(
@@ -338,14 +338,14 @@ fun JournalRouteCard(
                                                     imageVector = Icons.Default.AttachMoney,
                                                     contentDescription = null,
                                                     modifier = Modifier.size(12.dp),
-                                                    tint = Color(0xFF2E7D32)
+                                                    tint = Color.White
                                                 )
                                                 Spacer(modifier = Modifier.width(1.dp))
                                                 Text(
                                                     text = formatNumberWithSpaces(item.amountSum, isCurrency = true),
                                                     style = MaterialTheme.typography.labelSmall,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF2E7D32)
+                                                    color = Color.White
                                                 )
                                             }
                                         }

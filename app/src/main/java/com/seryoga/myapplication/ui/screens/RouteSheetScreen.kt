@@ -15,6 +15,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -41,7 +42,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
@@ -52,7 +56,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
 import com.seryoga.myapplication.data.RouteSheetItemEntity
+import com.seryoga.myapplication.ui.ClientGeoDetails
 import com.seryoga.myapplication.ui.ClientViewModel
+import com.seryoga.myapplication.ui.extractUrlFromText
+import kotlinx.coroutines.launch
 import sh.calvin.reorderable.ReorderableCollectionItemScope
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
@@ -71,17 +78,55 @@ fun formatNumberWithSpaces(number: Double, isCurrency: Boolean = false): String 
     return if (isCurrency) "$formatted грн" else "$formatted кг"
 }
 
+fun getBadgeColorForCityAndLabel(city: String?, label: String): Color {
+    val cleanCity = (city ?: "").lowercase().trim()
+    if (cleanCity.isBlank() && label.isBlank()) return Color(0xFF616161)
+
+    val cityHues = floatArrayOf(
+        200f, // Blue
+        280f, // Purple
+        30f,  // Orange
+        170f, // Teal
+        340f, // Pink/Rose
+        240f, // Indigo
+        45f,  // Amber
+        140f, // Green
+        10f,  // Deep Orange
+        220f  // Steel Blue
+    )
+
+    val cityHash = Math.abs(cleanCity.hashCode())
+    val baseHue = cityHues[cityHash % cityHues.size]
+
+    val labelHash = Math.abs(label.lowercase().trim().hashCode())
+    val lightnessShades = floatArrayOf(0.35f, 0.45f, 0.55f, 0.65f)
+    val lightness = lightnessShades[labelHash % lightnessShades.size]
+
+    return Color.hsl(hue = baseHue, saturation = 0.65f, lightness = lightness)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RouteSheetScreen(
     viewModel: ClientViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenClientDetail: (clientId: Long) -> Unit = {}
 ) {
     val activeRouteSheet by viewModel.activeRouteSheet.collectAsState()
     var selectedItemForNote by remember { mutableStateOf<RouteSheetItemEntity?>(null) }
     var selectedItemIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var swapItemData by remember { mutableStateOf<Pair<RouteSheetItemEntity, Int>?>(null) }
-    var isLocked by remember { mutableStateOf(false) }
+    var selectedClientIdForCalls by remember { mutableStateOf<Long?>(null) }
+    val isLocked by viewModel.isRouteSheetLocked.collectAsState()
+    val showCityHeaders by viewModel.showCityHeadersInRouteSheet.collectAsState()
+
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
+    val minSwipeThresholdPx = screenWidthPx * 0.25f
+
+    var isManualOrderingMode by remember { mutableStateOf(false) }
+    val manualAssignments = remember { mutableStateMapOf<Long, Int>() }
 
     val items = remember(activeRouteSheet) {
         activeRouteSheet?.items?.sortedBy { it.orderIndex } ?: emptyList()
@@ -100,6 +145,44 @@ fun RouteSheetScreen(
         viewModel.reorderRouteItems(localItems)
     }
 
+    LaunchedEffect(isLocked, localItems) {
+        if (isLocked && localItems.isNotEmpty()) {
+            val firstUncompletedIndex = localItems.indexOfFirst { !it.isCompleted }
+            if (firstUncompletedIndex >= 0) {
+                lazyListState.animateScrollToItem(firstUncompletedIndex)
+            }
+        }
+    }
+
+    fun exitManualOrderingMode() {
+        if (manualAssignments.isNotEmpty()) {
+            val assignedItems = localItems
+                .filter { it.id in manualAssignments }
+                .sortedBy { manualAssignments[it.id] ?: Int.MAX_VALUE }
+            val unassignedItems = localItems.filter { it.id !in manualAssignments }
+            val reorderedList = assignedItems + unassignedItems
+            localItems = reorderedList
+            viewModel.reorderRouteItems(reorderedList)
+        }
+        manualAssignments.clear()
+        isManualOrderingMode = false
+    }
+
+    fun assignNextNumber(item: RouteSheetItemEntity) {
+        if (item.id in manualAssignments) return
+        val usedNumbers = manualAssignments.values.toSet()
+        val nextNum = (1..localItems.size).firstOrNull { it !in usedNumbers } ?: (manualAssignments.size + 1)
+        manualAssignments[item.id] = nextNum
+
+        if (manualAssignments.size >= localItems.size) {
+            exitManualOrderingMode()
+        }
+    }
+
+    fun unassignNumber(item: RouteSheetItemEntity) {
+        manualAssignments.remove(item.id)
+    }
+
     if (selectedItemForNote != null) {
         RouteItemNoteDialog(
             item = selectedItemForNote!!,
@@ -108,6 +191,14 @@ fun RouteSheetScreen(
                 viewModel.updateRouteItemNote(selectedItemForNote!!, text, audio, photo, file)
                 selectedItemForNote = null
             }
+        )
+    }
+
+    if (selectedClientIdForCalls != null) {
+        PhoneNumbersDialog(
+            clientId = selectedClientIdForCalls!!,
+            onDismiss = { selectedClientIdForCalls = null },
+            viewModel = viewModel
         )
     }
 
@@ -135,9 +226,57 @@ fun RouteSheetScreen(
     Scaffold(
         topBar = {
             if (selectedItemIds.isNotEmpty()) {
+                val selectedItemsList = localItems.filter { it.id in selectedItemIds }
+                val selectedWeightKg = selectedItemsList.sumOf { it.weightKg }
+                val selectedAmountSum = selectedItemsList.sumOf { it.amountSum }
+
                 TopAppBar(
                     title = {
-                        Text("Виділено: ${selectedItemIds.size}", fontWeight = FontWeight.Bold)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Виділено",
+                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Text(
+                                text = "${selectedItemIds.size}",
+                                fontWeight = FontWeight.ExtraBold,
+                                style = MaterialTheme.typography.titleLarge,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                            if (selectedWeightKg > 0) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = formatNumberWithSpaces(selectedWeightKg, isCurrency = false),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            if (selectedAmountSum > 0) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = formatNumberWithSpaces(selectedAmountSum, isCurrency = true),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
                     },
                     navigationIcon = {
                         IconButton(onClick = { selectedItemIds = emptySet() }) {
@@ -158,7 +297,11 @@ fun RouteSheetScreen(
                 TopAppBar(
                     title = {
                         Column {
-                            Text("Маршрутник", fontWeight = FontWeight.Bold)
+                            if (isManualOrderingMode) {
+                                Text("Ручний порядок (${manualAssignments.size}/${localItems.size})", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
+                            } else {
+                                Text("Маршрутник", fontWeight = FontWeight.Bold)
+                            }
                             activeRouteSheet?.routeSheet?.dateString?.let { date ->
                                 Text("Дата: $date", style = MaterialTheme.typography.labelSmall)
                             }
@@ -170,7 +313,37 @@ fun RouteSheetScreen(
                         }
                     },
                     actions = {
-                        IconButton(onClick = { isLocked = !isLocked }) {
+                        IconButton(
+                            onClick = {
+                                if (isManualOrderingMode) {
+                                    exitManualOrderingMode()
+                                } else if (!isLocked) {
+                                    isManualOrderingMode = true
+                                    manualAssignments.clear()
+                                }
+                            },
+                            enabled = !isLocked
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FormatListNumbered,
+                                contentDescription = "Упорядкування вручну",
+                                tint = if (isLocked) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.38f)
+                                } else if (isManualOrderingMode) {
+                                    MaterialTheme.colorScheme.tertiary
+                                } else {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                }
+                            )
+                        }
+
+                        IconButton(onClick = {
+                            val newLock = !isLocked
+                            viewModel.setRouteSheetLocked(newLock)
+                            if (newLock && isManualOrderingMode) {
+                                exitManualOrderingMode()
+                            }
+                        }) {
                             Icon(
                                 if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
                                 contentDescription = if (isLocked) "Розблокувати" else "Заблокувати",
@@ -179,7 +352,7 @@ fun RouteSheetScreen(
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        containerColor = if (isManualOrderingMode) MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.primaryContainer,
                         titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                 )
@@ -206,6 +379,14 @@ fun RouteSheetScreen(
                 Column(modifier = Modifier.fillMaxSize()) {
                     val totalWeightKg = localItems.sumOf { it.weightKg }
                     val totalAmountSum = localItems.sumOf { it.amountSum }
+                    val uniquePointsCount = remember(localItems) {
+                        localItems.map { item ->
+                            val label = item.clientLabelSnapshot.trim()
+                            val shop = item.clientShopSnapshot.trim()
+                            val city = (item.clientCitySnapshot ?: "").trim()
+                            if (label.isNotBlank()) "$city-$label" else "$city-$shop"
+                        }.distinct().size
+                    }
 
                     if (totalWeightKg > 0 || totalAmountSum > 0) {
                         Surface(
@@ -221,7 +402,7 @@ fun RouteSheetScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Позицій: ${localItems.size}",
+                                    text = if (isLocked) "Точок: $uniquePointsCount" else "Позицій: ${localItems.size}",
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -238,7 +419,7 @@ fun RouteSheetScreen(
                                         text = "Сума: ${formatNumberWithSpaces(totalAmountSum, true)}",
                                         style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF2E7D32)
+                                        color = Color.White
                                     )
                                 }
                             }
@@ -252,9 +433,65 @@ fun RouteSheetScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(localItems, key = { it.id }) { item ->
-                            ReorderableItem(reorderableState, key = item.id, enabled = !isLocked) { isDragging ->
-                                val index = localItems.indexOf(item)
+                            val index = localItems.indexOf(item)
+                            val isCityHeader = isLocked && showCityHeaders && (index == 0 || (localItems[index - 1].clientCitySnapshot ?: "—") != (item.clientCitySnapshot ?: "—"))
+
+                            if (isCityHeader) {
+                                val currentCity = item.clientCitySnapshot ?: "—"
+                                val cityItems = localItems.filter { (it.clientCitySnapshot ?: "—") == currentCity }
+                                val cityPointCount = cityItems.size
+                                val cityTotalWeight = cityItems.sumOf { it.weightKg }
+                                val cityTotalSum = cityItems.sumOf { it.amountSum }
+
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp, bottom = 2.dp),
+                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = if (!item.clientCitySnapshot.isNullOrBlank()) item.clientCitySnapshot!! else "Без міста",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Text(
+                                                text = "Точок: $cityPointCount",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                            if (cityTotalWeight > 0) {
+                                                Text(
+                                                    text = "Вага: ${formatNumberWithSpaces(cityTotalWeight, false)}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                            if (cityTotalSum > 0) {
+                                                Text(
+                                                    text = "Сума: ${formatNumberWithSpaces(cityTotalSum, true)}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color.White
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            ReorderableItem(reorderableState, key = item.id, enabled = !isLocked && !isManualOrderingMode) { isDragging ->
                                 val isSelected = selectedItemIds.contains(item.id)
+                                val assignedNum = manualAssignments[item.id]
 
                                 RouteItemCard(
                                     reorderableScope = this,
@@ -264,6 +501,9 @@ fun RouteSheetScreen(
                                     isSelected = isSelected,
                                     hasSelectionMode = selectedItemIds.isNotEmpty(),
                                     isLocked = isLocked,
+                                    isManualOrderingMode = isManualOrderingMode,
+                                    assignedNumber = assignedNum,
+                                    minSwipeThresholdPx = minSwipeThresholdPx,
                                     onToggleSelect = {
                                         selectedItemIds = if (isSelected) selectedItemIds - item.id else selectedItemIds + item.id
                                     },
@@ -271,11 +511,18 @@ fun RouteSheetScreen(
                                         selectedItemIds = if (isSelected) selectedItemIds - item.id else selectedItemIds + item.id
                                     },
                                     onDoubleTapNumber = {
-                                        if (!isLocked) {
+                                        if (!isLocked && !isManualOrderingMode) {
                                             swapItemData = item to if (index >= 0) index else 0
                                         }
                                     },
-                                    onEditNote = { selectedItemForNote = item }
+                                    onEditNote = { selectedItemForNote = item },
+                                    onCallClient = { clientId -> selectedClientIdForCalls = clientId },
+                                    onGetClientAddressAndCoords = { clientId -> viewModel.getClientAddressAndCoords(clientId) },
+                                    onGetClientGeoDetails = { clientId -> viewModel.getClientGeoDetails(clientId) },
+                                    onOpenClientDetail = onOpenClientDetail,
+                                    onAssignNextNumber = { assignNextNumber(item) },
+                                    onUnassignNumber = { unassignNumber(item) },
+                                    onToggleCompleted = { completed -> viewModel.toggleRouteItemCompleted(item, completed) }
                                 )
                             }
                         }
@@ -296,50 +543,106 @@ fun RouteItemCard(
     isSelected: Boolean,
     hasSelectionMode: Boolean,
     isLocked: Boolean,
+    isManualOrderingMode: Boolean,
+    assignedNumber: Int?,
+    minSwipeThresholdPx: Float = 0f,
     onToggleSelect: () -> Unit,
     onLongPressNumber: () -> Unit,
     onDoubleTapNumber: () -> Unit,
-    onEditNote: () -> Unit
+    onEditNote: () -> Unit,
+    onCallClient: (clientId: Long) -> Unit,
+    onGetClientAddressAndCoords: suspend (clientId: Long) -> Triple<String?, Double?, Double?>,
+    onGetClientGeoDetails: suspend (clientId: Long) -> ClientGeoDetails,
+    onOpenClientDetail: (clientId: Long) -> Unit,
+    onAssignNextNumber: () -> Unit,
+    onUnassignNumber: () -> Unit,
+    onToggleCompleted: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val hasNote = item.noteText.isNotBlank() || item.noteAudioUri != null || item.notePhotoUri != null || item.noteFileUri != null
     var showContextMenu by remember { mutableStateOf(false) }
+
+    var clientAddressText by remember { mutableStateOf("") }
+    var hasCoordsRecord by remember { mutableStateOf(false) }
+    LaunchedEffect(item.clientId) {
+        if (item.clientId != 0L) {
+            val geo = onGetClientGeoDetails(item.clientId)
+            clientAddressText = geo.address ?: ""
+            hasCoordsRecord = !geo.coordinatesManual.isNullOrBlank()
+        }
+    }
 
     val elevation by animateDpAsState(if (isDragging) 8.dp else 2.dp, label = "elevation")
     val scale by animateFloatAsState(if (isDragging) 1.03f else 1f, label = "scale")
 
+    var cardWidthPx by remember { mutableFloatStateOf(0f) }
+    var totalHorizontalDragX by remember { mutableFloatStateOf(0f) }
+
+    val maxSlidePx = if (minSwipeThresholdPx > 0f) minSwipeThresholdPx * 1.25f else 400f
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .onSizeChanged { cardWidthPx = it.width.toFloat() }
             .graphicsLayer {
+                translationX = if (isManualOrderingMode || isLocked) totalHorizontalDragX.coerceIn(-maxSlidePx, maxSlidePx) else 0f
                 scaleX = scale
                 scaleY = scale
             }
+            .pointerInput(item.id, isManualOrderingMode, isLocked, minSwipeThresholdPx) {
+                if (isManualOrderingMode || isLocked) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalHorizontalDragX = 0f },
+                        onDragEnd = {
+                            val threshold = if (minSwipeThresholdPx > 0f) minSwipeThresholdPx else if (cardWidthPx > 0f) cardWidthPx * 0.5f else 180f
+                            if (totalHorizontalDragX >= threshold) {
+                                if (isManualOrderingMode) onAssignNextNumber()
+                                else if (isLocked) onToggleCompleted(true)
+                            } else if (totalHorizontalDragX <= -threshold) {
+                                if (isManualOrderingMode) onUnassignNumber()
+                                else if (isLocked) onToggleCompleted(false)
+                            }
+                            totalHorizontalDragX = 0f
+                        },
+                        onDragCancel = { totalHorizontalDragX = 0f },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            totalHorizontalDragX += dragAmount
+                        }
+                    )
+                }
+            }
             .combinedClickable(
                 onClick = {
-                    if (hasSelectionMode) {
+                    if (isManualOrderingMode) {
+                        if (assignedNumber == null) onAssignNextNumber() else onUnassignNumber()
+                    } else if (hasSelectionMode) {
                         onToggleSelect()
                     }
                 },
                 onLongClick = {
-                    if (!hasSelectionMode) {
+                    if (!hasSelectionMode && !isManualOrderingMode) {
                         showContextMenu = true
                     }
                 }
             )
-            .then(
-                if (isSelected) Modifier.border(
-                    width = 2.5.dp,
-                    color = MaterialTheme.colorScheme.primary,
-                    shape = RoundedCornerShape(16.dp)
-                ) else Modifier
+            .border(
+                width = if (isSelected || (isLocked && item.isCompleted) || (isManualOrderingMode && assignedNumber != null)) 2.5.dp else 1.dp,
+                color = when {
+                    isLocked && item.isCompleted -> Color(0xFF4CAF50)
+                    isManualOrderingMode && assignedNumber != null -> MaterialTheme.colorScheme.primary
+                    isSelected -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.outlineVariant
+                },
+                shape = RoundedCornerShape(16.dp)
             ),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = elevation),
         colors = CardDefaults.cardColors(
             containerColor = when {
                 isDragging -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f)
-                isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                isSelected || (isManualOrderingMode && assignedNumber != null) -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
                 else -> MaterialTheme.colorScheme.surface
             }
         )
@@ -350,32 +653,49 @@ fun RouteItemCard(
                     .padding(12.dp)
                     .fillMaxWidth()
             ) {
-                // Top Row: Number Badge + (City & Shop Name) + (Label & Icons)
+                // Top Row: Number Badge + (City & Shop Name) + (Invoice Number & Label & Drag Handle)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.Top
                 ) {
                     // Number Badge (Top-Left)
+                    val badgeBgColor = when {
+                        isManualOrderingMode -> if (assignedNumber != null) MaterialTheme.colorScheme.primary else Color(0xFF9E9E9E)
+                        isSelected || isDragging -> MaterialTheme.colorScheme.primary
+                        else -> getBadgeColorForCityAndLabel(item.clientCitySnapshot, item.clientLabelSnapshot)
+                    }
+
                     Surface(
                         modifier = Modifier
                             .size(44.dp)
-                            .pointerInput(item.id, index) {
+                            .pointerInput(item.id, index, hasSelectionMode, isManualOrderingMode) {
                                 detectTapGestures(
-                                    onDoubleTap = { onDoubleTapNumber() },
-                                    onLongPress = { onLongPressNumber() },
+                                    onDoubleTap = { if (!isLocked && !isManualOrderingMode) onDoubleTapNumber() },
+                                    onLongPress = {
+                                        if (!isManualOrderingMode) onLongPressNumber()
+                                    },
                                     onTap = {
-                                        if (hasSelectionMode) {
+                                        if (isManualOrderingMode) {
+                                            if (assignedNumber == null) onAssignNextNumber() else onUnassignNumber()
+                                        } else if (hasSelectionMode) {
                                             onToggleSelect()
                                         }
                                     }
                                 )
                             },
                         shape = RoundedCornerShape(12.dp),
-                        color = if (isSelected || isDragging) MaterialTheme.colorScheme.primary else Color(0xFF616161),
+                        color = badgeBgColor,
                         tonalElevation = 4.dp
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            if (isSelected && !isDragging) {
+                            if (isManualOrderingMode) {
+                                Text(
+                                    text = if (assignedNumber != null) "$assignedNumber" else "—",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            } else if (isSelected && !isDragging) {
                                 Icon(
                                     Icons.Default.Check,
                                     contentDescription = "Виділено",
@@ -418,90 +738,250 @@ fun RouteItemCard(
 
                     Spacer(modifier = Modifier.width(6.dp))
 
-                    // Right Column: Label ("Мітка") & Icons
+                    // Right Column: Invoice Number & Label & Drag Handle
                     Column(horizontalAlignment = Alignment.End) {
-                        if (item.clientLabelSnapshot.isNotBlank()) {
-                            Text(
-                                text = item.clientLabelSnapshot,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Invoice Number Badge (BEFORE Label chip, on same level)
+                            if (item.orderNumber.isNotBlank()) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Receipt,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(12.dp),
+                                            tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text(
+                                            text = "№ ${item.orderNumber}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Label Chip ("Мітка")
+                            if (item.clientLabelSnapshot.isNotBlank()) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                                    shape = MaterialTheme.shapes.extraSmall
+                                ) {
+                                    Text(
+                                        text = item.clientLabelSnapshot,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                                    )
+                                }
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(4.dp))
 
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        with(reorderableScope) {
                             IconButton(
-                                onClick = onEditNote,
-                                modifier = Modifier.size(28.dp)
+                                onClick = {},
+                                enabled = !isLocked && !isManualOrderingMode,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .then(if (!isLocked && !isManualOrderingMode) Modifier.draggableHandle() else Modifier)
                             ) {
                                 Icon(
-                                    imageVector = if (hasNote) Icons.AutoMirrored.Filled.Comment else Icons.Default.AddComment,
-                                    contentDescription = "Нотатка",
-                                    tint = if (hasNote) Color(0xFF2196F3) else MaterialTheme.colorScheme.outline
+                                    imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Menu,
+                                    contentDescription = if (isLocked) "Заблоковано" else "Перетягнути",
+                                    modifier = Modifier.size(26.dp),
+                                    tint = if (isLocked) MaterialTheme.colorScheme.error.copy(alpha = 0.6f) else if (isDragging) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
                                 )
-                            }
-
-                            Spacer(modifier = Modifier.width(4.dp))
-
-                            with(reorderableScope) {
-                                IconButton(
-                                    onClick = {},
-                                    enabled = !isLocked,
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .then(if (!isLocked) Modifier.draggableHandle() else Modifier)
-                                ) {
-                                    Icon(
-                                        imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Menu,
-                                        contentDescription = if (isLocked) "Заблоковано" else "Перетягнути",
-                                        modifier = Modifier.size(26.dp),
-                                        tint = if (isLocked) MaterialTheme.colorScheme.error.copy(alpha = 0.6f) else if (isDragging) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                                    )
-                                }
                             }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(2.dp))
 
-                // Middle Row: Client Name ("Клієнт")
+                // Middle Row: Client Name ("Клієнт") - Color #A5D6A7 if has coords record, #F48FB1 if no coords record
                 if (item.clientNameSnapshot.isNotBlank()) {
+                    val clientNameColor = if (hasCoordsRecord) Color(0xFFA5D6A7) else Color(0xFFF48FB1)
                     Text(
                         text = item.clientNameSnapshot,
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = clientNameColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                // Address (Place Icon) placed ABOVE Weight and Sum
+                if (clientAddressText.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Place,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text(
+                            text = clientAddressText,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
 
-                // Bottom Row: "Вага, кг" & "Сума, грн"
+                Spacer(modifier = Modifier.height(3.dp))
+
+                // Bottom Row: Left = (Weight & Sum), Right = (Action Buttons: Directions, Call, Note)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val weightText = if (item.weightKg > 0) formatNumberWithSpaces(item.weightKg, isCurrency = false) else "— кг"
-                    Text(
-                        text = weightText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (item.weightKg > 0) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Scale,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = formatNumberWithSpaces(item.weightKg, isCurrency = false),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
 
-                    val amountText = if (item.amountSum > 0) formatNumberWithSpaces(item.amountSum, isCurrency = true) else "— грн"
-                    Text(
-                        text = amountText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                        if (item.amountSum > 0) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.AttachMoney,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = Color.White
+                                )
+                                Spacer(modifier = Modifier.width(1.dp))
+                                Text(
+                                    text = formatNumberWithSpaces(item.amountSum, isCurrency = true),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    // Action Buttons Row (Directions, Call, Note)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        // Map Pin button («Показати на карті»)
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    val geo = if (item.clientId != 0L) onGetClientGeoDetails(item.clientId) else null
+                                    val shop = cleanTextForCopy(item.clientShopSnapshot)
+                                    val cleanFirstName = cleanTextForCopy(item.clientNameSnapshot)
+                                    val pinLabel = listOfNotNull(shop.ifBlank { null }, cleanFirstName.ifBlank { null }).joinToString(", ") + if (item.clientLabelSnapshot.isNotBlank()) " (${item.clientLabelSnapshot})" else ""
+                                    val manualCoords = geo?.coordinatesManual?.trim()
+
+                                    val extractedUrl = extractUrlFromText(manualCoords)
+                                    if (extractedUrl != null) {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(extractedUrl)).apply { setPackage("com.google.android.apps.maps") }
+                                        try {
+                                            context.startActivity(intent)
+                                        } catch (_: Exception) {
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(extractedUrl)))
+                                        }
+                                    } else {
+                                        val pointQuery = when {
+                                            geo?.lat != null && geo.lng != null -> "${geo.lat},${geo.lng}"
+                                            !manualCoords.isNullOrBlank() -> manualCoords
+                                            else -> null
+                                        }
+
+                                        if (!pointQuery.isNullOrBlank()) {
+                                            val gmmUri = Uri.parse("geo:0,0?q=${Uri.encode(pointQuery)}(${Uri.encode(pinLabel)})&z=20")
+                                            val intent = Intent(Intent.ACTION_VIEW, gmmUri).apply { setPackage("com.google.android.apps.maps") }
+                                            try {
+                                                context.startActivity(intent)
+                                            } catch (_: Exception) {
+                                                val webUri = Uri.parse("https://www.google.com/maps/search/?api=1&query=${Uri.encode(pointQuery)}")
+                                                context.startActivity(Intent(Intent.ACTION_VIEW, webUri))
+                                            }
+                                        } else {
+                                            android.widget.Toast.makeText(context, "У клієнта не вказано координати!", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Place,
+                                contentDescription = "Показати на карті",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        // Call button
+                        IconButton(
+                            onClick = {
+                                if (item.clientId != 0L) {
+                                    onCallClient(item.clientId)
+                                }
+                            },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Call,
+                                contentDescription = "Передзвонити",
+                                tint = Color(0xFF4CAF50),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        // Note button
+                        IconButton(
+                            onClick = onEditNote,
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (hasNote) Icons.AutoMirrored.Filled.Comment else Icons.Default.AddComment,
+                                contentDescription = "Нотатка",
+                                tint = if (hasNote) Color(0xFF2196F3) else MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
                 }
 
                 if (item.noteText.isNotBlank()) {
@@ -518,26 +998,53 @@ fun RouteItemCard(
 
             DropdownMenu(
                 expanded = showContextMenu,
-                onDismissRequest = { showContextMenu = false }
-            ) {
-                if (item.orderNumber.isNotBlank()) {
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = "Заявка № ${item.orderNumber}",
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        },
-                        enabled = false,
-                        onClick = {},
-                        leadingIcon = {
-                            Icon(Icons.Default.Receipt, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        }
+                onDismissRequest = { showContextMenu = false },
+                modifier = Modifier
+                    .border(
+                        width = 1.5.dp,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                        shape = RoundedCornerShape(12.dp)
                     )
-                    HorizontalDivider()
-                }
+                    .clip(RoundedCornerShape(12.dp)),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Відкрити картку") },
+                    leadingIcon = { Icon(Icons.Default.Edit, null) },
+                    onClick = {
+                        showContextMenu = false
+                        if (item.clientId != 0L) {
+                            onOpenClientDetail(item.clientId)
+                        }
+                    }
+                )
+                HorizontalDivider()
+
+                DropdownMenuItem(
+                    text = { Text("Перероб. на готівкову") },
+                    leadingIcon = { Icon(Icons.Default.Autorenew, null) },
+                    onClick = {
+                        showContextMenu = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val namesClean = cleanTextForCopy(item.clientNameSnapshot)
+                        val textToCopy = "$namesClean потрібно переробити готівкову накладну №${item.orderNumber} на перерахункову"
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Перероб. на готівкову", textToCopy))
+                    }
+                )
+
+                DropdownMenuItem(
+                    text = { Text("Оплатили перерах.") },
+                    leadingIcon = { Icon(Icons.Default.AttachMoney, null) },
+                    onClick = {
+                        showContextMenu = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val namesClean = cleanTextForCopy(item.clientNameSnapshot)
+                        val amountStr = formatNumberWithSpaces(item.amountSum, true)
+                        val textToCopy = "$namesClean оплатили перерахункову накладну №${item.orderNumber} ($amountStr)"
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Оплатили перерах", textToCopy))
+                    }
+                )
+                HorizontalDivider()
 
                 DropdownMenuItem(
                     text = { Text("Поділитись") },

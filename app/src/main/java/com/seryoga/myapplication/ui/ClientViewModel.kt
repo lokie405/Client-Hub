@@ -2,6 +2,7 @@ package com.seryoga.myapplication.ui
 
 import android.annotation.SuppressLint
 import android.app.Application
+import android.content.Context
 import android.location.Geocoder
 import android.net.Uri
 import android.os.Environment
@@ -49,11 +50,62 @@ data class ImportResult(
     val routeClients: List<ImportedRouteClient> = emptyList()
 )
 
+data class ClientGeoDetails(
+    val address: String?,
+    val lat: Double?,
+    val lng: Double?,
+    val coordinatesManual: String?
+)
+
+fun extractUrlFromText(text: String?): String? {
+    if (text.isNullOrBlank()) return null
+    val regex = Regex("""https?://[^\s]+""")
+    val match = regex.find(text.trim())
+    return match?.value
+}
+
+fun parseCoordinates(raw: String?): Pair<Double, Double>? {
+    if (raw.isNullOrBlank()) return null
+    val clean = raw.trim()
+    val regex = Regex("""([+-]?\d+(?:[\.,]\d+)?)[\s,;]+([+-]?\d+(?:[\.,]\d+)?)""")
+    val match = regex.find(clean)
+    if (match != null) {
+        val lat = match.groupValues[1].replace(',', '.').toDoubleOrNull()
+        val lng = match.groupValues[2].replace(',', '.').toDoubleOrNull()
+        if (lat != null && lng != null) {
+            return Pair(lat, lng)
+        }
+    }
+    val parts = clean.split(";", " ").mapNotNull { it.trim().replace(',', '.').toDoubleOrNull() }
+    if (parts.size >= 2) {
+        return Pair(parts[0], parts[1])
+    }
+    return null
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class ClientViewModel(application: Application) : AndroidViewModel(application) {
     private val clientDao: ClientDao = AppDatabase.getDatabase(application).clientDao()
     private val fusedLocationClient = LocationServices.getFusedLocationProviderClient(application)
     private val gson = Gson()
+    private val prefs = application.getSharedPreferences("client_app_prefs", Context.MODE_PRIVATE)
+
+    private val _isRouteSheetLocked = MutableStateFlow(false)
+    val isRouteSheetLocked: StateFlow<Boolean> = _isRouteSheetLocked.asStateFlow()
+
+    fun setRouteSheetLocked(locked: Boolean) {
+        _isRouteSheetLocked.value = locked
+    }
+
+    private val _showCityHeadersInRouteSheet = MutableStateFlow(
+        prefs.getBoolean("show_city_headers_route_sheet", true)
+    )
+    val showCityHeadersInRouteSheet: StateFlow<Boolean> = _showCityHeadersInRouteSheet.asStateFlow()
+
+    fun setShowCityHeadersInRouteSheet(enabled: Boolean) {
+        prefs.edit().putBoolean("show_city_headers_route_sheet", enabled).apply()
+        _showCityHeadersInRouteSheet.value = enabled
+    }
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery
@@ -175,6 +227,12 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun toggleRouteItemCompleted(item: RouteSheetItemEntity, isCompleted: Boolean) {
+        viewModelScope.launch {
+            clientDao.updateRouteSheetItem(item.copy(isCompleted = isCompleted))
+        }
+    }
+
     fun deleteRouteSheet(routeSheetId: Long) {
         viewModelScope.launch {
             clientDao.deleteRouteSheetItems(routeSheetId)
@@ -245,6 +303,22 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
         return details.phones.map { PhoneWithStats(it, clientDao.getIncomingCount(it.phoneNumber), clientDao.getOutgoingCount(it.phoneNumber)) }
     }
 
+    suspend fun getClientGeoDetails(clientId: Long): ClientGeoDetails {
+        if (clientId == 0L) return ClientGeoDetails(null, null, null, null)
+        val details = clientDao.getClientById(clientId) ?: return ClientGeoDetails(null, null, null, null)
+        val client = details.client
+        val manualCoords = client.coordinatesManual
+        val parsed = parseCoordinates(manualCoords)
+        val lat = parsed?.first ?: client.latitude
+        val lng = parsed?.second ?: client.longitude
+        return ClientGeoDetails(client.addressManual, lat, lng, manualCoords)
+    }
+
+    suspend fun getClientAddressAndCoords(clientId: Long): Triple<String?, Double?, Double?> {
+        val geo = getClientGeoDetails(clientId)
+        return Triple(geo.address, geo.lat, geo.lng)
+    }
+
     fun getCallHistory(phoneNumber: String): StateFlow<List<CallLogEntity>> = clientDao.getCallLogsForPhone(phoneNumber).stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     @SuppressLint("Range")
@@ -271,12 +345,53 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun addClient(id: Long? = null, names: List<String>, shopName: String, city: String? = null, phones: List<String>, address: String? = null, lat: Double? = null, lon: Double? = null, label: String? = null, namesStatus: String = "changed", shopNameStatus: String = "changed", cityStatus: String = "changed", addressStatus: String = "changed", phonesStatus: String = "changed", notesStatus: String = "changed") {
+    fun addClient(
+        id: Long? = null,
+        names: List<String>,
+        shopName: String,
+        city: String? = null,
+        phones: List<String>,
+        notes: List<String> = emptyList(),
+        address: String? = null,
+        coordinatesManual: String? = null,
+        lat: Double? = null,
+        lon: Double? = null,
+        label: String? = null,
+        namesStatus: String = "changed",
+        shopNameStatus: String = "changed",
+        cityStatus: String = "changed",
+        addressStatus: String = "changed",
+        phonesStatus: String = "changed",
+        notesStatus: String = "changed"
+    ) {
         viewModelScope.launch {
-            val clientId = clientDao.insertClient(ClientEntity(id = id ?: 0, shopName = shopName, city = city, addressManual = address, latitude = lat, longitude = lon, label = label, namesStatus = namesStatus, shopNameStatus = shopNameStatus, cityStatus = cityStatus, addressStatus = addressStatus, phonesStatus = phonesStatus, notesStatus = notesStatus))
-            clientDao.deleteNamesForClient(clientId); names.filter { it.isNotBlank() }.forEach { clientDao.insertName(NameEntity(clientId = clientId, fullName = it)) }
-            if (id != null) clientDao.deletePhonesForClient(id)
+            val clientId = clientDao.insertClient(
+                ClientEntity(
+                    id = id ?: 0,
+                    shopName = shopName,
+                    city = city,
+                    addressManual = address,
+                    coordinatesManual = coordinatesManual,
+                    latitude = lat,
+                    longitude = lon,
+                    label = label,
+                    namesStatus = namesStatus,
+                    shopNameStatus = shopNameStatus,
+                    cityStatus = cityStatus,
+                    addressStatus = addressStatus,
+                    phonesStatus = phonesStatus,
+                    notesStatus = notesStatus
+                )
+            )
+            clientDao.deleteNamesForClient(clientId)
+            names.filter { it.isNotBlank() }.forEach { clientDao.insertName(NameEntity(clientId = clientId, fullName = it)) }
+
+            clientDao.deletePhonesForClient(clientId)
             phones.filter { it.isNotBlank() }.forEach { clientDao.insertPhone(PhoneEntity(clientId = clientId, phoneNumber = it)) }
+
+            clientDao.deleteNotesForClient(clientId)
+            notes.filter { it.isNotBlank() }.forEach { clientDao.insertNote(NoteEntity(clientId = clientId, content = it)) }
+
             autoExportData()
         }
     }
@@ -447,7 +562,7 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                         }
 
                         if (existing == null) {
-                            val nid = clientDao.insertClient(ClientEntity(shopName = shop, city = city.ifBlank { null }, addressManual = addr.ifBlank { null }, addressStatus = if (addr.isNotBlank()) "changed" else "changed", label = label))
+                            val nid = clientDao.insertClient(ClientEntity(shopName = shop, city = city.ifBlank { null }, addressManual = addr.ifBlank { null }, addressStatus = "unchanged", label = label))
                             clientDao.insertName(NameEntity(clientId = nid, fullName = name)); phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = nid, phoneNumber = p)) }
                             if (en.isNotBlank()) clientDao.insertNote(NoteEntity(clientId = nid, content = en))
                             added.add("[$label] $shop")
@@ -460,8 +575,7 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                             if (cur.cityStatus == "changed" && city != (cur.city ?: "")) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "city", cur.city ?: "", city)); cur = cur.copy(city = city.ifBlank { null }); changed = true }
                             if (cur.phonesStatus == "changed") { val cp = existing.phones.map { it.phoneNumber }.distinct().sorted(); if (phones != cp) { clientDao.deletePhonesForClient(cur.id); phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = cur.id, phoneNumber = p)) }; currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "phones", cp.joinToString(", "), phones.joinToString(", "))); changed = true } }
                             if (addr.isNotBlank()) {
-                                if (cur.addressManual.isNullOrBlank()) { cur = cur.copy(addressManual = addr, addressStatus = "changed"); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "address", "", addr)); changed = true }
-                                else if (cur.addressStatus == "changed" && addr.trim() != cur.addressManual.trim()) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "address", cur.addressManual, addr)); cur = cur.copy(addressManual = addr); changed = true }
+                                if (cur.addressManual.isNullOrBlank()) { cur = cur.copy(addressManual = addr, addressStatus = "unchanged"); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "address", "", addr)); changed = true }
                             }
                             if (cur.notesStatus == "changed" && en.isNotBlank() && existing.notes.none { it.content.trim().equals(en, true) }) { clientDao.insertNote(NoteEntity(clientId = cur.id, content = en)); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "notes", "...", "Додано: $en")); changed = true }
                             if (changed) clientDao.insertClient(cur)

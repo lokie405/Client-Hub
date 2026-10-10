@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -50,6 +51,8 @@ import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.rememberCameraPositionState
 import com.seryoga.myapplication.data.ClientWithDetails
 import com.seryoga.myapplication.ui.ClientViewModel
+import com.seryoga.myapplication.ui.extractUrlFromText
+import com.seryoga.myapplication.ui.parseCoordinates
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -69,11 +72,12 @@ fun ClientDetailScreen(
     var shopName by remember { mutableStateOf("") }
     var city by remember { mutableStateOf("") }
     var phones by remember { mutableStateOf(listOf("")) }
+    var notes by remember { mutableStateOf(listOf("")) }
     var address by remember { mutableStateOf("") }
+    var coordinatesManual by remember { mutableStateOf("") }
     var latitude by remember { mutableStateOf<Double?>(null) }
     var longitude by remember { mutableStateOf<Double?>(null) }
     var label by remember { mutableStateOf("") }
-    var newNoteText by remember { mutableStateOf("") }
 
     // Statuses
     var namesStatus by remember { mutableStateOf("changed") }
@@ -88,7 +92,9 @@ fun ClientDetailScreen(
     var initialShopName by remember { mutableStateOf("") }
     var initialCity by remember { mutableStateOf("") }
     var initialPhones by remember { mutableStateOf(listOf("")) }
+    var initialNotes by remember { mutableStateOf(listOf("")) }
     var initialAddress by remember { mutableStateOf("") }
+    var initialCoordinatesManual by remember { mutableStateOf("") }
     var initialLabel by remember { mutableStateOf("") }
     var initialNamesStatus by remember { mutableStateOf("changed") }
     var initialShopNameStatus by remember { mutableStateOf("changed") }
@@ -103,7 +109,9 @@ fun ClientDetailScreen(
             shopName != initialShopName ||
             city != initialCity ||
             phones != initialPhones ||
+            notes != initialNotes ||
             address != initialAddress ||
+            coordinatesManual != initialCoordinatesManual ||
             label != initialLabel ||
             namesStatus != initialNamesStatus ||
             shopNameStatus != initialShopNameStatus ||
@@ -123,7 +131,9 @@ fun ClientDetailScreen(
             shopName = shopName,
             city = city,
             phones = phones,
+            notes = notes,
             address = address,
+            coordinatesManual = coordinatesManual.ifBlank { null },
             lat = latitude,
             lon = longitude,
             label = label,
@@ -254,7 +264,9 @@ fun ClientDetailScreen(
                 names = it.names.map { n -> n.fullName }.ifEmpty { listOf("") }
                 shopName = it.client.shopName; city = it.client.city ?: ""
                 phones = it.phones.map { p -> p.phoneNumber }.ifEmpty { listOf("") }
+                notes = it.notes.map { n -> n.content }.ifEmpty { listOf("") }
                 address = it.client.addressManual ?: ""
+                coordinatesManual = it.client.coordinatesManual ?: ""
                 latitude = it.client.latitude; longitude = it.client.longitude
                 label = it.client.label ?: ""
                 
@@ -263,7 +275,7 @@ fun ClientDetailScreen(
                 phonesStatus = it.client.phonesStatus; notesStatus = it.client.notesStatus
 
                 initialNames = names; initialShopName = shopName; initialCity = city
-                initialPhones = phones; initialAddress = address; initialLabel = label
+                initialPhones = phones; initialNotes = notes; initialAddress = address; initialCoordinatesManual = coordinatesManual; initialLabel = label
                 initialNamesStatus = namesStatus; initialShopNameStatus = shopNameStatus
                 initialCityStatus = cityStatus; initialAddressStatus = addressStatus
                 initialPhonesStatus = phonesStatus; initialNotesStatus = notesStatus
@@ -314,21 +326,69 @@ fun ClientDetailScreen(
                 trailingIcon = {
                     Row {
                         IconButton(onClick = {
-                            if (address.isNotBlank()) {
+                            val parsedCoords = coordinatesManual.split(",", ";", " ").mapNotNull { it.trim().toDoubleOrNull() }
+                            val effectiveLat = if (parsedCoords.size >= 2) parsedCoords[0] else latitude
+                            val effectiveLng = if (parsedCoords.size >= 2) parsedCoords[1] else longitude
+
+                            if (effectiveLat != null && effectiveLng != null) {
                                 val cleanShop = cleanTextForCopy(shopName)
                                 val cleanFirstName = cleanTextForCopy(names.firstOrNull() ?: "")
                                 val pinLabel = listOfNotNull(cleanShop.ifBlank { null }, cleanFirstName.ifBlank { null }).joinToString(", ") + if (label.isNotBlank()) " ($label)" else ""
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 clipboard.setPrimaryClip(ClipData.newPlainText("Client Info", pinLabel))
                                 scope.launch { snackbarHostState.showSnackbar("Інформацію скопійовано") }
-                                val gmmUri = if (latitude != null && longitude != null) Uri.parse("geo:0,0?q=$latitude,$longitude(${Uri.encode(pinLabel)})&z=20") else Uri.parse("geo:0,0?q=${Uri.encode(address)}(${Uri.encode(pinLabel)})&z=20")
+                                val gmmUri = Uri.parse("geo:0,0?q=$effectiveLat,$effectiveLng(${Uri.encode(pinLabel)})&z=20")
                                 context.startActivity(Intent(Intent.ACTION_VIEW, gmmUri).apply { setPackage("com.google.android.apps.maps") })
+                            } else {
+                                scope.launch { snackbarHostState.showSnackbar("Вкажіть координати клієнта!") }
                             }
                         }) { Icon(Icons.Default.PushPin, "Створити мітку", tint = MaterialTheme.colorScheme.primary) }
                         IconButton(onClick = { locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }) { Icon(Icons.Default.MyLocation, "Моя локація") }
                         IconButton(onClick = { showMapPicker = true }) { Icon(Icons.Default.AddLocationAlt, "Вибрати на карті") }
                     }
                 }
+            )
+
+            OutlinedTextField(
+                value = coordinatesManual,
+                onValueChange = { coordinatesManual = it },
+                label = { Text("Координати (ручне введення)") },
+                leadingIcon = { Icon(Icons.Default.PinDrop, null) },
+                trailingIcon = {
+                    IconButton(onClick = {
+                        val extractedUrl = extractUrlFromText(coordinatesManual)
+                        if (extractedUrl != null) {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(extractedUrl)).apply { setPackage("com.google.android.apps.maps") }
+                            try {
+                                context.startActivity(intent)
+                            } catch (_: Exception) {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(extractedUrl)))
+                            }
+                        } else {
+                            val parsedCoords = parseCoordinates(coordinatesManual)
+                            val effectiveLat = parsedCoords?.first ?: latitude
+                            val effectiveLng = parsedCoords?.second ?: longitude
+
+                            if (effectiveLat != null && effectiveLng != null) {
+                                val cleanShop = cleanTextForCopy(shopName)
+                                val cleanFirstName = cleanTextForCopy(names.firstOrNull() ?: "")
+                                val pinLabel = listOfNotNull(cleanShop.ifBlank { null }, cleanFirstName.ifBlank { null }).joinToString(", ") + if (label.isNotBlank()) " ($label)" else ""
+                                val gmmUri = Uri.parse("geo:0,0?q=$effectiveLat,$effectiveLng(${Uri.encode(pinLabel)})&z=20")
+                                val intent = Intent(Intent.ACTION_VIEW, gmmUri).apply { setPackage("com.google.android.apps.maps") }
+                                try {
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, gmmUri))
+                                }
+                            } else {
+                                scope.launch { snackbarHostState.showSnackbar("Вкажіть координати клієнта!") }
+                            }
+                        }
+                    }) {
+                        Icon(Icons.Default.Place, "Показати точку на карті", tint = MaterialTheme.colorScheme.primary)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
             )
 
             // Phones section
@@ -349,9 +409,15 @@ fun ClientDetailScreen(
                     Text("Примітки", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     StatusIndicator(status = notesStatus, onToggle = { notesStatus = it }, label = "Примітки")
                 }
-                OutlinedTextField(value = newNoteText, onValueChange = { newNoteText = it }, label = { Text("Нова замітка") }, trailingIcon = {
-                    IconButton(onClick = { if (clientId != null && newNoteText.isNotBlank()) { viewModel.addNote(clientId, newNoteText); newNoteText = "" } }) { Icon(Icons.Default.Save, null) }
-                }, modifier = Modifier.fillMaxWidth())
+                notes.forEachIndexed { index, note ->
+                    OutlinedTextField(
+                        value = note,
+                        onValueChange = { nv -> notes = notes.toMutableList().also { it[index] = nv } },
+                        label = { Text("Примітка ${index + 1}") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                TextButton(onClick = { notes = notes + "" }) { Text("Додати ще одну примітку") }
             }
         }
     }
