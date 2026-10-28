@@ -236,6 +236,8 @@ fun ClientListScreen(
         )
     }
 
+    val activeRouteSheet by viewModel.activeRouteSheet.collectAsState()
+
     Scaffold(
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
@@ -256,6 +258,7 @@ fun ClientListScreen(
                 items(clients) { client ->
                     ClientCard(
                         clientWithDetails = client,
+                        activeRouteSheet = activeRouteSheet,
                         onClick = { onClientClick(client.client.id) },
                         onCallClick = { selectedClientForPhones = client.client.id },
                         labelCounts = labelCounts,
@@ -310,6 +313,7 @@ fun formatShortName(fullName: String): String {
 @Composable
 fun ClientCard(
     clientWithDetails: ClientWithDetails,
+    activeRouteSheet: RouteSheetWithItems? = null,
     onClick: () -> Unit,
     onCallClick: () -> Unit,
     labelCounts: Map<String?, Int>,
@@ -360,26 +364,12 @@ fun ClientCard(
     ) {
         Box {
             Row(modifier = Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Row(modifier = Modifier.padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        if (hasNotes) Icon(Icons.AutoMirrored.Filled.Comment, "Примітка", modifier = Modifier.size(14.dp), tint = Color(0xFF2196F3))
-                        if (isAllFilled) Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(14.dp), tint = Color(0xFF4CAF50))
-                        else {
-                            if (!isPhoneFilled) Icon(Icons.Default.Phone, null, modifier = Modifier.size(14.dp), tint = Color(0xFFFFB300))
-                            if (!isAddressFilled || client.addressStatus == "changed") Icon(Icons.Default.LocationOn, null, modifier = Modifier.size(14.dp), tint = Color(0xFFF44336))
-                            if (!isLabelFilled) Icon(Icons.AutoMirrored.Filled.Label, null, modifier = Modifier.size(14.dp), tint = Color(0xFF9C27B0))
-                            if (!isShopNameFilled) Icon(Icons.Default.Storefront, null, modifier = Modifier.size(14.dp), tint = Color(0xFF03A9F4))
-                        }
-                    }
-                    Surface(modifier = Modifier.size(50.dp), shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primaryContainer, tonalElevation = 4.dp) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.Default.Storefront, null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary) }
-                    }
+                Surface(modifier = Modifier.size(50.dp), shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primaryContainer, tonalElevation = 4.dp) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.Default.Storefront, null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary) }
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    val hasCoords = !client.coordinatesManual.isNullOrBlank() || client.latitude != null
-                    val clientNameColor = if (hasCoords) Color(0xFFA5D6A7) else Color(0xFFF48FB1)
-                    clientWithDetails.names.forEach { name -> HighlightedText(text = name.fullName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = clientNameColor) }
+                    clientWithDetails.names.forEach { name -> HighlightedText(text = name.fullName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color.White) }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         HighlightedText(text = client.shopName, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                         if (hasNotes) {
@@ -432,7 +422,9 @@ fun ClientCard(
                                 }
                             }
                         }) {
-                            Icon(Icons.Default.Place, "Показати на карті", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            val hasCoords = !client.coordinatesManual.isNullOrBlank()
+                            val pinIconTint = if (hasCoords) Color(0xFF4CAF50) else Color(0xFFF44336)
+                            Icon(Icons.Default.Place, "Показати на карті", tint = pinIconTint, modifier = Modifier.size(20.dp))
                         }
                         IconButton(onClick = onCallClick) { Icon(Icons.Default.Phone, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) }
                     }
@@ -450,6 +442,28 @@ fun ClientCard(
                     .clip(RoundedCornerShape(12.dp)),
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
             ) {
+                DropdownMenuItem(
+                    text = { Text("№ та Σ накладної") },
+                    leadingIcon = { Icon(Icons.Default.Receipt, null) },
+                    onClick = {
+                        showMenu = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val activeItems = activeRouteSheet?.items?.filter { it.clientId == client.id } ?: emptyList()
+                        val textToCopy = if (activeItems.isNotEmpty()) {
+                            activeItems.joinToString("; ") { sel ->
+                                val ord = formatOrderNumber(sel.orderNumber)
+                                val sumStr = formatNumberWithSpaces(sel.amountSum, true)
+                                if (ord.isNotBlank()) "$ord ($sumStr)" else "($sumStr)"
+                            }
+                        } else {
+                            val labelText = client.label?.trim() ?: ""
+                            if (labelText.isNotBlank()) "[$labelText]" else "Немає накладних"
+                        }
+                        clipboard.setPrimaryClip(ClipData.newPlainText("№ та Σ накладної", textToCopy))
+                    }
+                )
+                HorizontalDivider()
+
                 DropdownMenuItem(
                     text = { Text("Перероб. на готівкову") },
                     leadingIcon = { Icon(Icons.Default.Autorenew, null) },

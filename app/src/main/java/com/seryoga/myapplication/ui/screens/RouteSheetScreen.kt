@@ -55,10 +55,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import com.seryoga.myapplication.data.ClientWithDetails
 import com.seryoga.myapplication.data.RouteSheetItemEntity
 import com.seryoga.myapplication.ui.ClientGeoDetails
 import com.seryoga.myapplication.ui.ClientViewModel
 import com.seryoga.myapplication.ui.extractUrlFromText
+import com.seryoga.myapplication.ui.isHttpsCoordinates
 import kotlinx.coroutines.launch
 import sh.calvin.reorderable.ReorderableCollectionItemScope
 import sh.calvin.reorderable.ReorderableItem
@@ -76,6 +78,12 @@ fun formatNumberWithSpaces(number: Double, isCurrency: Boolean = false): String 
     val formatter = DecimalFormat(pattern, symbols)
     val formatted = formatter.format(number)
     return if (isCurrency) "$formatted грн" else "$formatted кг"
+}
+
+fun formatOrderNumber(raw: String): String {
+    if (raw.isBlank()) return ""
+    val clean = raw.trim().replace(Regex("(?i)^ПС"), "").trim()
+    return if (clean.isNotBlank()) "№$clean" else ""
 }
 
 fun getBadgeColorForCityAndLabel(city: String?, label: String): Color {
@@ -113,6 +121,7 @@ fun RouteSheetScreen(
     onOpenClientDetail: (clientId: Long) -> Unit = {}
 ) {
     val activeRouteSheet by viewModel.activeRouteSheet.collectAsState()
+    val allClients by viewModel.clients.collectAsState()
     var selectedItemForNote by remember { mutableStateOf<RouteSheetItemEntity?>(null) }
     var selectedItemIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var swapItemData by remember { mutableStateOf<Pair<RouteSheetItemEntity, Int>?>(null) }
@@ -434,11 +443,18 @@ fun RouteSheetScreen(
                     ) {
                         items(localItems, key = { it.id }) { item ->
                             val index = localItems.indexOf(item)
-                            val isCityHeader = isLocked && showCityHeaders && (index == 0 || (localItems[index - 1].clientCitySnapshot ?: "—") != (item.clientCitySnapshot ?: "—"))
+
+                            fun getEffectiveCityForItem(routeItem: RouteSheetItemEntity): String {
+                                val matchingClient = allClients.find { it.client.id == routeItem.clientId }
+                                return (matchingClient?.client?.city ?: routeItem.clientCitySnapshot) ?: "—"
+                            }
+
+                            val currentCity = getEffectiveCityForItem(item)
+                            val prevCity = if (index > 0) getEffectiveCityForItem(localItems[index - 1]) else null
+                            val isCityHeader = isLocked && showCityHeaders && (index == 0 || currentCity != prevCity)
 
                             if (isCityHeader) {
-                                val currentCity = item.clientCitySnapshot ?: "—"
-                                val cityItems = localItems.filter { (it.clientCitySnapshot ?: "—") == currentCity }
+                                val cityItems = localItems.filter { getEffectiveCityForItem(it) == currentCity }
                                 val cityPointCount = cityItems.size
                                 val cityTotalWeight = cityItems.sumOf { it.weightKg }
                                 val cityTotalSum = cityItems.sumOf { it.amountSum }
@@ -456,7 +472,7 @@ fun RouteSheetScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = if (!item.clientCitySnapshot.isNullOrBlank()) item.clientCitySnapshot!! else "Без міста",
+                                            text = if (currentCity != "—") currentCity else "Без міста",
                                             style = MaterialTheme.typography.titleSmall,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -497,8 +513,10 @@ fun RouteSheetScreen(
                                     reorderableScope = this,
                                     index = if (index >= 0) index else 0,
                                     item = item,
+                                    clientWithDetails = allClients.find { it.client.id == item.clientId },
                                     isDragging = isDragging,
                                     isSelected = isSelected,
+                                    selectedItems = localItems.filter { it.id in selectedItemIds },
                                     hasSelectionMode = selectedItemIds.isNotEmpty(),
                                     isLocked = isLocked,
                                     isManualOrderingMode = isManualOrderingMode,
@@ -539,8 +557,10 @@ fun RouteItemCard(
     reorderableScope: ReorderableCollectionItemScope,
     index: Int,
     item: RouteSheetItemEntity,
+    clientWithDetails: ClientWithDetails? = null,
     isDragging: Boolean,
     isSelected: Boolean,
+    selectedItems: List<RouteSheetItemEntity> = emptyList(),
     hasSelectionMode: Boolean,
     isLocked: Boolean,
     isManualOrderingMode: Boolean,
@@ -563,13 +583,24 @@ fun RouteItemCard(
     val hasNote = item.noteText.isNotBlank() || item.noteAudioUri != null || item.notePhotoUri != null || item.noteFileUri != null
     var showContextMenu by remember { mutableStateOf(false) }
 
-    var clientAddressText by remember { mutableStateOf("") }
-    var hasCoordsRecord by remember { mutableStateOf(false) }
-    LaunchedEffect(item.clientId) {
-        if (item.clientId != 0L) {
+    val liveClient = clientWithDetails?.client
+    val liveNames = clientWithDetails?.names
+
+    val effectiveCity = liveClient?.city ?: item.clientCitySnapshot
+    val effectiveShop = liveClient?.shopName ?: item.clientShopSnapshot
+    val effectiveLabel = liveClient?.label ?: item.clientLabelSnapshot
+    val effectiveName = if (!liveNames.isNullOrEmpty()) liveNames.joinToString(" ") { it.fullName } else item.clientNameSnapshot
+    val effectiveAddress = if (liveClient != null) (liveClient.addressManual ?: "") else ""
+
+    val hasCoordsRecord = isHttpsCoordinates(liveClient?.coordinatesManual)
+
+    var clientAddressText by remember { mutableStateOf(effectiveAddress) }
+    LaunchedEffect(item.clientId, liveClient?.addressManual) {
+        if (liveClient != null) {
+            clientAddressText = liveClient.addressManual ?: ""
+        } else if (item.clientId != 0L) {
             val geo = onGetClientGeoDetails(item.clientId)
             clientAddressText = geo.address ?: ""
-            hasCoordsRecord = !geo.coordinatesManual.isNullOrBlank()
         }
     }
 
@@ -617,13 +648,13 @@ fun RouteItemCard(
                 onClick = {
                     if (isManualOrderingMode) {
                         if (assignedNumber == null) onAssignNextNumber() else onUnassignNumber()
-                    } else if (hasSelectionMode) {
-                        onToggleSelect()
+                    } else {
+                        showContextMenu = true
                     }
                 },
                 onLongClick = {
-                    if (!hasSelectionMode && !isManualOrderingMode) {
-                        showContextMenu = true
+                    if (!isManualOrderingMode) {
+                        onToggleSelect()
                     }
                 }
             )
@@ -662,7 +693,7 @@ fun RouteItemCard(
                     val badgeBgColor = when {
                         isManualOrderingMode -> if (assignedNumber != null) MaterialTheme.colorScheme.primary else Color(0xFF9E9E9E)
                         isSelected || isDragging -> MaterialTheme.colorScheme.primary
-                        else -> getBadgeColorForCityAndLabel(item.clientCitySnapshot, item.clientLabelSnapshot)
+                        else -> getBadgeColorForCityAndLabel(effectiveCity, effectiveLabel)
                     }
 
                     Surface(
@@ -717,7 +748,7 @@ fun RouteItemCard(
                     // City (Blue) & Shop Name Column
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (!item.clientCitySnapshot.isNullOrBlank()) item.clientCitySnapshot else "—",
+                            text = if (!effectiveCity.isNullOrBlank()) effectiveCity else "—",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF448AFF),
@@ -728,7 +759,7 @@ fun RouteItemCard(
                         Spacer(modifier = Modifier.height(2.dp))
 
                         Text(
-                            text = item.clientShopSnapshot,
+                            text = effectiveShop,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
@@ -746,39 +777,42 @@ fun RouteItemCard(
                         ) {
                             // Invoice Number Badge (BEFORE Label chip, on same level)
                             if (item.orderNumber.isNotBlank()) {
-                                Surface(
-                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
-                                    shape = RoundedCornerShape(6.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                val cleanOrd = formatOrderNumber(item.orderNumber)
+                                if (cleanOrd.isNotBlank()) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                                        shape = RoundedCornerShape(6.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Receipt,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(12.dp),
-                                            tint = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
-                                        Spacer(modifier = Modifier.width(3.dp))
-                                        Text(
-                                            text = "№ ${item.orderNumber}",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Receipt,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(12.dp),
+                                                tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text(
+                                                text = cleanOrd,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                        }
                                     }
                                 }
                             }
 
                             // Label Chip ("Мітка")
-                            if (item.clientLabelSnapshot.isNotBlank()) {
+                            if (effectiveLabel.isNotBlank()) {
                                 Surface(
                                     color = MaterialTheme.colorScheme.tertiaryContainer,
                                     shape = MaterialTheme.shapes.extraSmall
                                 ) {
                                     Text(
-                                        text = item.clientLabelSnapshot,
+                                        text = effectiveLabel,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
@@ -812,13 +846,13 @@ fun RouteItemCard(
                 Spacer(modifier = Modifier.height(2.dp))
 
                 // Middle Row: Client Name ("Клієнт") - Color #A5D6A7 if has coords record, #F48FB1 if no coords record
-                if (item.clientNameSnapshot.isNotBlank()) {
-                    val clientNameColor = if (hasCoordsRecord) Color(0xFFA5D6A7) else Color(0xFFF48FB1)
+                // Middle Row: Client Name ("Клієнт") - Color.White
+                if (effectiveName.isNotBlank()) {
                     Text(
-                        text = item.clientNameSnapshot,
+                        text = effectiveName,
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Bold,
-                        color = clientNameColor,
+                        color = Color.White,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -944,10 +978,11 @@ fun RouteItemCard(
                             },
                             modifier = Modifier.size(34.dp)
                         ) {
+                            val pinIconTint = if (!liveClient?.coordinatesManual.isNullOrBlank()) Color(0xFF4CAF50) else Color(0xFFF44336)
                             Icon(
                                 imageVector = Icons.Default.Place,
                                 contentDescription = "Показати на карті",
-                                tint = MaterialTheme.colorScheme.primary,
+                                tint = pinIconTint,
                                 modifier = Modifier.size(20.dp)
                             )
                         }
@@ -1020,14 +1055,44 @@ fun RouteItemCard(
                 )
                 HorizontalDivider()
 
+                val targetSelectedItems = if (hasSelectionMode && isSelected) selectedItems else listOf(item)
+
+                DropdownMenuItem(
+                    text = { Text("№ та Σ накладної") },
+                    leadingIcon = { Icon(Icons.Default.Receipt, null) },
+                    onClick = {
+                        showContextMenu = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val textToCopy = if (targetSelectedItems.size > 1) {
+                            targetSelectedItems.joinToString("; ") { sel ->
+                                val ord = formatOrderNumber(sel.orderNumber)
+                                val sumStr = formatNumberWithSpaces(sel.amountSum, true)
+                                if (ord.isNotBlank()) "$ord ($sumStr)" else "($sumStr)"
+                            }
+                        } else {
+                            val ord = formatOrderNumber(item.orderNumber)
+                            val sumStr = formatNumberWithSpaces(item.amountSum, true)
+                            if (ord.isNotBlank()) "$ord ($sumStr)" else "($sumStr)"
+                        }
+                        clipboard.setPrimaryClip(ClipData.newPlainText("№ та Σ накладної", textToCopy))
+                    }
+                )
+
                 DropdownMenuItem(
                     text = { Text("Перероб. на готівкову") },
                     leadingIcon = { Icon(Icons.Default.Autorenew, null) },
                     onClick = {
                         showContextMenu = false
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        val namesClean = cleanTextForCopy(item.clientNameSnapshot)
-                        val textToCopy = "$namesClean потрібно переробити готівкову накладну №${item.orderNumber} на перерахункову"
+                        val namesClean = cleanTextForCopy(effectiveName)
+                        val textToCopy = if (targetSelectedItems.size > 1) {
+                            val ordersList = targetSelectedItems.mapNotNull { sel -> formatOrderNumber(sel.orderNumber).ifBlank { null } }.joinToString("; ")
+                            "$namesClean потрібно переробити готівкову накладну $ordersList на перерахункову"
+                        } else {
+                            val ordStr = formatOrderNumber(item.orderNumber)
+                            val ordSpace = if (ordStr.isNotBlank()) "$ordStr " else ""
+                            "$namesClean потрібно переробити готівкову накладну ${ordSpace}на перерахункову"
+                        }
                         clipboard.setPrimaryClip(ClipData.newPlainText("Перероб. на готівкову", textToCopy))
                     }
                 )
@@ -1038,9 +1103,23 @@ fun RouteItemCard(
                     onClick = {
                         showContextMenu = false
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        val namesClean = cleanTextForCopy(item.clientNameSnapshot)
-                        val amountStr = formatNumberWithSpaces(item.amountSum, true)
-                        val textToCopy = "$namesClean оплатили перерахункову накладну №${item.orderNumber} ($amountStr)"
+                        val namesClean = cleanTextForCopy(effectiveName)
+                        val textToCopy = if (targetSelectedItems.size > 1) {
+                            val ordersWithSums = targetSelectedItems.joinToString("; ") { selItem ->
+                                val ord = formatOrderNumber(selItem.orderNumber)
+                                val ordSpace = if (ord.isNotBlank()) "$ord " else ""
+                                val sumStr = formatNumberWithSpaces(selItem.amountSum, true)
+                                "$ordSpace($sumStr)"
+                            }
+                            val totalSelectedSum = targetSelectedItems.sumOf { it.amountSum }
+                            val totalSumStr = formatNumberWithSpaces(totalSelectedSum, true)
+                            "$namesClean оплатили перерахункову накладну $ordersWithSums на загальну суму $totalSumStr"
+                        } else {
+                            val amountStr = formatNumberWithSpaces(item.amountSum, true)
+                            val ord = formatOrderNumber(item.orderNumber)
+                            val ordSpace = if (ord.isNotBlank()) "$ord " else ""
+                            "$namesClean оплатили перерахункову накладну $ordSpace($amountStr)"
+                        }
                         clipboard.setPrimaryClip(ClipData.newPlainText("Оплатили перерах", textToCopy))
                     }
                 )

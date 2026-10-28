@@ -385,7 +385,8 @@ fun ClientDetailScreen(
                             }
                         }
                     }) {
-                        Icon(Icons.Default.Place, "Показати точку на карті", tint = MaterialTheme.colorScheme.primary)
+                        val pinIconTint = if (coordinatesManual.isNotBlank()) Color(0xFF4CAF50) else Color(0xFFF44336)
+                        Icon(Icons.Default.Place, "Показати точку на карті", tint = pinIconTint)
                     }
                 },
                 modifier = Modifier.fillMaxWidth()

@@ -254,7 +254,7 @@ fun JournalRouteCard(
                                 Text(
                                     text = item.clientNameSnapshot,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = Color.White
                                 )
                             }
 

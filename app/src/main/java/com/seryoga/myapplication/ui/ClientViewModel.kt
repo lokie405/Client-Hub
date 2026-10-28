@@ -57,6 +57,20 @@ data class ClientGeoDetails(
     val coordinatesManual: String?
 )
 
+fun isHttpsCoordinates(raw: String?): Boolean {
+    if (raw.isNullOrBlank()) return false
+    return raw.trim().lowercase().contains("https")
+}
+
+fun isCoordinatesFieldFilled(raw: String?): Boolean {
+    if (raw.isNullOrBlank()) return false
+    val clean = raw.trim().lowercase()
+    if (clean == "null" || clean == "координати" || clean.startsWith("координати (ручне") || clean == "координати (ручне введення)") {
+        return false
+    }
+    return true
+}
+
 fun extractUrlFromText(text: String?): String? {
     if (text.isNullOrBlank()) return null
     val regex = Regex("""https?://[^\s]+""")
@@ -392,6 +406,24 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
             clientDao.deleteNotesForClient(clientId)
             notes.filter { it.isNotBlank() }.forEach { clientDao.insertNote(NoteEntity(clientId = clientId, content = it)) }
 
+            val targetId = if (id != null && id != 0L) id else clientId
+            val activeRoute = activeRouteSheet.value
+            if (activeRoute != null && targetId != 0L) {
+                val matchingItems = activeRoute.items.filter { it.clientId == targetId }
+                if (matchingItems.isNotEmpty()) {
+                    val mainName = names.filter { it.isNotBlank() }.firstOrNull() ?: ""
+                    val updatedItems = matchingItems.map { item ->
+                        item.copy(
+                            clientLabelSnapshot = label ?: "",
+                            clientShopSnapshot = shopName,
+                            clientCitySnapshot = city,
+                            clientNameSnapshot = mainName
+                        )
+                    }
+                    clientDao.updateRouteSheetItems(updatedItems)
+                }
+            }
+
             autoExportData()
         }
     }
@@ -570,6 +602,7 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                         } else {
                             importedRouteClients.add(ImportedRouteClient(existing.client.id, label, shop, city.ifBlank { null }, name, orderNumber, weightKg, amountSum))
                             var cur = existing.client; var changed = false; val mainName = existing.names.firstOrNull()?.fullName ?: ""
+                            if (label.isNotBlank() && cur.label != label) { cur = cur.copy(label = label); changed = true }
                             if (cur.namesStatus == "changed" && name != mainName && !name.contains("ФОП", true) && existing.names.none { it.fullName.trim() == name.trim() }) { clientDao.insertName(NameEntity(clientId = cur.id, fullName = name)); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "names", mainName, "Додано: $name")); changed = true }
                             if (cur.shopNameStatus == "changed" && shop != cur.shopName) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "shopName", cur.shopName, shop)); cur = cur.copy(shopName = shop); changed = true }
                             if (cur.cityStatus == "changed" && city != (cur.city ?: "")) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "city", cur.city ?: "", city)); cur = cur.copy(city = city.ifBlank { null }); changed = true }
@@ -628,7 +661,8 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     jsonArray.forEach { element ->
                         val obj = element.asJsonObject; val clientObj = obj.getAsJsonObject("client")
                         val nStatus = clientObj.get("namesStatus")?.asString ?: clientObj.get("fullNameStatus")?.asString ?: "changed"
-                        val nid = clientDao.insertClient(ClientEntity(id = 0, middleName = clientObj.get("middleName")?.asString ?: "", shopName = clientObj.get("shopName")?.asString ?: "", city = clientObj.get("city")?.asString, addressManual = clientObj.get("addressManual")?.asString, latitude = clientObj.get("latitude")?.asDouble, longitude = clientObj.get("longitude")?.asDouble, label = clientObj.get("label")?.asString, namesStatus = nStatus, shopNameStatus = clientObj.get("shopNameStatus")?.asString ?: "changed", cityStatus = clientObj.get("cityStatus")?.asString ?: "changed", addressStatus = clientObj.get("addressStatus")?.asString ?: "changed", phonesStatus = clientObj.get("phonesStatus")?.asString ?: "changed", notesStatus = clientObj.get("notesStatus")?.asString ?: "changed"))
+                        val coordsManual = clientObj.get("coordinatesManual")?.asString
+                        val nid = clientDao.insertClient(ClientEntity(id = 0, middleName = clientObj.get("middleName")?.asString ?: "", shopName = clientObj.get("shopName")?.asString ?: "", city = clientObj.get("city")?.asString, addressManual = clientObj.get("addressManual")?.asString, coordinatesManual = coordsManual, latitude = clientObj.get("latitude")?.asDouble, longitude = clientObj.get("longitude")?.asDouble, label = clientObj.get("label")?.asString, namesStatus = nStatus, shopNameStatus = clientObj.get("shopNameStatus")?.asString ?: "changed", cityStatus = clientObj.get("cityStatus")?.asString ?: "changed", addressStatus = clientObj.get("addressStatus")?.asString ?: "changed", phonesStatus = clientObj.get("phonesStatus")?.asString ?: "changed", notesStatus = clientObj.get("notesStatus")?.asString ?: "changed"))
                         count++
                         if (obj.has("names")) obj.getAsJsonArray("names").forEach { clientDao.insertName(NameEntity(clientId = nid, fullName = it.asJsonObject.get("fullName").asString)) }
                         else if (clientObj.has("fullName")) clientDao.insertName(NameEntity(clientId = nid, fullName = clientObj.get("fullName").asString))
