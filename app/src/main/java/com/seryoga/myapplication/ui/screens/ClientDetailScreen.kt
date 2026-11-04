@@ -52,6 +52,7 @@ import com.google.maps.android.compose.rememberCameraPositionState
 import com.seryoga.myapplication.data.ClientWithDetails
 import com.seryoga.myapplication.ui.ClientViewModel
 import com.seryoga.myapplication.ui.extractUrlFromText
+import com.seryoga.myapplication.ui.isCoordinatesFieldFilled
 import com.seryoga.myapplication.ui.parseCoordinates
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -385,7 +386,7 @@ fun ClientDetailScreen(
                             }
                         }
                     }) {
-                        val pinIconTint = if (coordinatesManual.isNotBlank()) Color(0xFF4CAF50) else Color(0xFFF44336)
+                        val pinIconTint = if (isCoordinatesFieldFilled(coordinatesManual)) Color(0xFF4CAF50) else Color(0xFFF44336)
                         Icon(Icons.Default.Place, "Показати точку на карті", tint = pinIconTint)
                     }
                 },

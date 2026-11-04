@@ -422,8 +422,7 @@ fun ClientCard(
                                 }
                             }
                         }) {
-                            val hasCoords = !client.coordinatesManual.isNullOrBlank()
-                            val pinIconTint = if (hasCoords) Color(0xFF4CAF50) else Color(0xFFF44336)
+                            val pinIconTint = if (isCoordinatesFieldFilled(client.coordinatesManual)) Color(0xFF4CAF50) else Color(0xFFF44336)
                             Icon(Icons.Default.Place, "Показати на карті", tint = pinIconTint, modifier = Modifier.size(20.dp))
                         }
                         IconButton(onClick = onCallClick) { Icon(Icons.Default.Phone, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) }

@@ -60,7 +60,9 @@ import com.seryoga.myapplication.data.RouteSheetItemEntity
 import com.seryoga.myapplication.ui.ClientGeoDetails
 import com.seryoga.myapplication.ui.ClientViewModel
 import com.seryoga.myapplication.ui.extractUrlFromText
+import com.seryoga.myapplication.ui.isCoordinatesFieldFilled
 import com.seryoga.myapplication.ui.isHttpsCoordinates
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import sh.calvin.reorderable.ReorderableCollectionItemScope
 import sh.calvin.reorderable.ReorderableItem
@@ -508,12 +510,15 @@ fun RouteSheetScreen(
                             ReorderableItem(reorderableState, key = item.id, enabled = !isLocked && !isManualOrderingMode) { isDragging ->
                                 val isSelected = selectedItemIds.contains(item.id)
                                 val assignedNum = manualAssignments[item.id]
+                                val matchedClient = allClients.find { it.client.id == item.clientId }
+                                    ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
+                                    ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
 
                                 RouteItemCard(
                                     reorderableScope = this,
                                     index = if (index >= 0) index else 0,
                                     item = item,
-                                    clientWithDetails = allClients.find { it.client.id == item.clientId },
+                                    clientWithDetails = matchedClient,
                                     isDragging = isDragging,
                                     isSelected = isSelected,
                                     selectedItems = localItems.filter { it.id in selectedItemIds },
@@ -621,6 +626,22 @@ fun RouteItemCard(
                 scaleX = scale
                 scaleY = scale
             }
+            .combinedClickable(
+                onClick = {
+                    if (isManualOrderingMode) {
+                        if (assignedNumber == null) onAssignNextNumber() else onUnassignNumber()
+                    } else if (hasSelectionMode) {
+                        onToggleSelect()
+                    } else {
+                        showContextMenu = true
+                    }
+                },
+                onLongClick = {
+                    if (!isManualOrderingMode) {
+                        showContextMenu = true
+                    }
+                }
+            )
             .pointerInput(item.id, isManualOrderingMode, isLocked, minSwipeThresholdPx) {
                 if (isManualOrderingMode || isLocked) {
                     detectHorizontalDragGestures(
@@ -644,20 +665,6 @@ fun RouteItemCard(
                     )
                 }
             }
-            .combinedClickable(
-                onClick = {
-                    if (isManualOrderingMode) {
-                        if (assignedNumber == null) onAssignNextNumber() else onUnassignNumber()
-                    } else {
-                        showContextMenu = true
-                    }
-                },
-                onLongClick = {
-                    if (!isManualOrderingMode) {
-                        onToggleSelect()
-                    }
-                }
-            )
             .border(
                 width = if (isSelected || (isLocked && item.isCompleted) || (isManualOrderingMode && assignedNumber != null)) 2.5.dp else 1.dp,
                 color = when {
@@ -699,7 +706,7 @@ fun RouteItemCard(
                     Surface(
                         modifier = Modifier
                             .size(44.dp)
-                            .pointerInput(item.id, index, hasSelectionMode, isManualOrderingMode) {
+                            .pointerInput(item.id, index, hasSelectionMode, isManualOrderingMode, isLocked) {
                                 detectTapGestures(
                                     onDoubleTap = { if (!isLocked && !isManualOrderingMode) onDoubleTapNumber() },
                                     onLongPress = {
@@ -708,7 +715,7 @@ fun RouteItemCard(
                                     onTap = {
                                         if (isManualOrderingMode) {
                                             if (assignedNumber == null) onAssignNextNumber() else onUnassignNumber()
-                                        } else if (hasSelectionMode) {
+                                        } else {
                                             onToggleSelect()
                                         }
                                     }
@@ -978,7 +985,7 @@ fun RouteItemCard(
                             },
                             modifier = Modifier.size(34.dp)
                         ) {
-                            val pinIconTint = if (!liveClient?.coordinatesManual.isNullOrBlank()) Color(0xFF4CAF50) else Color(0xFFF44336)
+                            val pinIconTint = if (isCoordinatesFieldFilled(liveClient?.coordinatesManual)) Color(0xFF4CAF50) else Color(0xFFF44336)
                             Icon(
                                 imageVector = Icons.Default.Place,
                                 contentDescription = "Показати на карті",

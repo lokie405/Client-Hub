@@ -57,6 +57,15 @@ data class ClientGeoDetails(
     val coordinatesManual: String?
 )
 
+fun cleanTextForCopy(text: String): String {
+    if (text.isBlank()) return ""
+    return text
+        .replace(Regex("""(?i)\b(ФОП|маг\.|м-н\.|маг|м-н)\b\.?"""), "")
+        .replace(Regex("""(?i)^[,\.\s:\-—"“'«»]+|[,\.\s:\-—"“'«»]+$"""), "")
+        .replace(Regex("""\s+"""), " ")
+        .trim('"', '“', '”', '«', '»', ' ')
+}
+
 fun isHttpsCoordinates(raw: String?): Boolean {
     if (raw.isNullOrBlank()) return false
     return raw.trim().lowercase().contains("https")
@@ -547,8 +556,48 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     val added = mutableListOf<String>(); val currentLogs = mutableListOf<UpdateLogEntry>()
                     val importedRouteClients = mutableListOf<ImportedRouteClient>()
                     val allClients = clientDao.getAllClients().first()
-                    val existingDNumbers = allClients.mapNotNull { Regex("""^D(\d+)D$""", RegexOption.IGNORE_CASE).find(it.client.label ?: "")?.groupValues?.get(1)?.toIntOrNull() }
-                    var dCount = maxOf(allClients.count { it.client.label?.uppercase()?.startsWith("D") == true }, existingDNumbers.maxOrNull() ?: 0)
+                    val currentDbClients = clientDao.getAllClients().first().toMutableList()
+                    val existingDNumbers = currentDbClients.mapNotNull { Regex("""^D(\d+)D$""", RegexOption.IGNORE_CASE).find(it.client.label ?: "")?.groupValues?.get(1)?.toIntOrNull() }
+                    var dCount = maxOf(currentDbClients.count { it.client.label?.uppercase()?.startsWith("D") == true }, existingDNumbers.maxOrNull() ?: 0)
+
+                    fun findExistingClientInList(targetLabel: String?, targetShop: String, targetCity: String, targetName: String): ClientWithDetails? {
+                        val cleanShop = cleanTextForCopy(targetShop).lowercase()
+                        val cleanCity = targetCity.trim().lowercase()
+                        val cleanName = cleanTextForCopy(targetName).lowercase()
+                        val cleanLabel = targetLabel?.trim()?.uppercase()
+
+                        if (!cleanLabel.isNullOrBlank()) {
+                            val match = currentDbClients.firstOrNull { c -> c.client.label?.trim()?.equals(cleanLabel, ignoreCase = true) == true }
+                            if (match != null) return match
+                        }
+
+                        if (cleanShop.isNotBlank()) {
+                            val matchCity = currentDbClients.firstOrNull { c ->
+                                val cShop = cleanTextForCopy(c.client.shopName).lowercase()
+                                val cCity = (c.client.city ?: "").trim().lowercase()
+                                cShop == cleanShop && (cleanCity.isBlank() || cCity == cleanCity || cCity.contains(cleanCity) || cleanCity.contains(cCity))
+                            }
+                            if (matchCity != null) return matchCity
+
+                            val matchShop = currentDbClients.firstOrNull { c ->
+                                val cShop = cleanTextForCopy(c.client.shopName).lowercase()
+                                cShop == cleanShop || (cShop.length >= 4 && cleanShop.length >= 4 && (cShop.contains(cleanShop) || cleanShop.contains(cShop)))
+                            }
+                            if (matchShop != null) return matchShop
+                        }
+
+                        if (cleanName.isNotBlank()) {
+                            val matchName = currentDbClients.firstOrNull { c ->
+                                c.names.any { n ->
+                                    val cName = cleanTextForCopy(n.fullName).lowercase()
+                                    cName == cleanName || (cName.length >= 5 && cleanName.length >= 5 && (cName.contains(cleanName) || cleanName.contains(cName)))
+                                }
+                            }
+                            if (matchName != null) return matchName
+                        }
+
+                        return null
+                    }
 
                     for (i in dataStartRowIdx until sheet.physicalNumberOfRows) {
                         val row = sheet.getRow(i) ?: continue; val nc = if (noI != -1) fmt.formatCellValue(row.getCell(noI)).trim() else ""
@@ -573,16 +622,10 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                         if (m != null) {
                             label = m.value.trim().uppercase()
                             en = nc.replace(m.value, "").trim().trim(',', '.', ';', ' ', ':', '-', '—')
-                            existing = clientDao.getClientByLabel(label)
+                            existing = findExistingClientInList(label, shop, city, name)
                         } else {
                             en = nc.trim().trim(',', '.', ';', ' ', ':', '-', '—')
-                            // Check database for duplicate by 3 matching fields: Name, City, Shop Name
-                            val duplicate = allClients.firstOrNull { c ->
-                                val shopMatch = c.client.shopName.trim().equals(shop.trim(), ignoreCase = true)
-                                val cityMatch = (c.client.city ?: "").trim().equals(city.trim(), ignoreCase = true)
-                                val nameMatch = c.names.any { it.fullName.trim().equals(name.trim(), ignoreCase = true) }
-                                shopMatch && cityMatch && nameMatch
-                            }
+                            val duplicate = findExistingClientInList(null, shop, city, name)
                             if (duplicate != null) {
                                 existing = duplicate
                                 label = duplicate.client.label ?: ""
@@ -599,14 +642,15 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                             if (en.isNotBlank()) clientDao.insertNote(NoteEntity(clientId = nid, content = en))
                             added.add("[$label] $shop")
                             importedRouteClients.add(ImportedRouteClient(nid, label, shop, city.ifBlank { null }, name, orderNumber, weightKg, amountSum))
+                            clientDao.getClientById(nid)?.let { currentDbClients.add(it) }
                         } else {
                             importedRouteClients.add(ImportedRouteClient(existing.client.id, label, shop, city.ifBlank { null }, name, orderNumber, weightKg, amountSum))
                             var cur = existing.client; var changed = false; val mainName = existing.names.firstOrNull()?.fullName ?: ""
                             if (label.isNotBlank() && cur.label != label) { cur = cur.copy(label = label); changed = true }
-                            if (cur.namesStatus == "changed" && name != mainName && !name.contains("ФОП", true) && existing.names.none { it.fullName.trim() == name.trim() }) { clientDao.insertName(NameEntity(clientId = cur.id, fullName = name)); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "names", mainName, "Додано: $name")); changed = true }
-                            if (cur.shopNameStatus == "changed" && shop != cur.shopName) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "shopName", cur.shopName, shop)); cur = cur.copy(shopName = shop); changed = true }
-                            if (cur.cityStatus == "changed" && city != (cur.city ?: "")) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "city", cur.city ?: "", city)); cur = cur.copy(city = city.ifBlank { null }); changed = true }
-                            if (cur.phonesStatus == "changed") { val cp = existing.phones.map { it.phoneNumber }.distinct().sorted(); if (phones != cp) { clientDao.deletePhonesForClient(cur.id); phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = cur.id, phoneNumber = p)) }; currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "phones", cp.joinToString(", "), phones.joinToString(", "))); changed = true } }
+                            if (cur.namesStatus == "changed" && name != mainName && !name.contains("ФОП", true) && existing.names.none { cleanTextForCopy(it.fullName).equals(cleanTextForCopy(name), ignoreCase = true) }) { clientDao.insertName(NameEntity(clientId = cur.id, fullName = name)); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "names", mainName, "Додано: $name")); changed = true }
+                            if (cur.shopNameStatus == "changed" && shop.isNotBlank() && cleanTextForCopy(shop) != cleanTextForCopy(cur.shopName)) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "shopName", cur.shopName, shop)); cur = cur.copy(shopName = shop); changed = true }
+                            if (cur.cityStatus == "changed" && city.isNotBlank() && city != (cur.city ?: "")) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "city", cur.city ?: "", city)); cur = cur.copy(city = city); changed = true }
+                            if (cur.phonesStatus == "changed" && phones.isNotEmpty()) { val cp = existing.phones.map { it.phoneNumber }.distinct().sorted(); if (phones != cp) { clientDao.deletePhonesForClient(cur.id); phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = cur.id, phoneNumber = p)) }; currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "phones", cp.joinToString(", "), phones.joinToString(", "))); changed = true } }
                             if (addr.isNotBlank()) {
                                 if (cur.addressManual.isNullOrBlank()) { cur = cur.copy(addressManual = addr, addressStatus = "unchanged"); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "address", "", addr)); changed = true }
                             }
