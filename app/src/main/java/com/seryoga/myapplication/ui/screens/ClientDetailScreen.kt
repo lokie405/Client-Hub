@@ -309,9 +309,25 @@ fun ClientDetailScreen(
                 }
                 names.forEachIndexed { index, name ->
                     OutlinedTextField(
-                        value = name, onValueChange = { nv -> names = names.toMutableList().also { it[index] = nv } },
+                        value = name,
+                        onValueChange = { nv -> names = names.toMutableList().also { it[index] = nv } },
                         label = { Text("Ім'я та прізвище ${index + 1}") },
-                        modifier = Modifier.fillMaxWidth().focusRequester(if(index==0) nameFocusRequester else remember { FocusRequester() })
+                        trailingIcon = if (index > 0) {
+                            {
+                                IconButton(onClick = {
+                                    if (index in names.indices) {
+                                        names = names.toMutableList().also { it.removeAt(index) }
+                                    }
+                                }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Видалити ім'я ${index + 1}",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        } else null,
+                        modifier = Modifier.fillMaxWidth().focusRequester(if (index == 0) nameFocusRequester else remember { FocusRequester() })
                     )
                 }
                 TextButton(onClick = { names = names + "" }) { Text("Додати ще одне ім'я") }

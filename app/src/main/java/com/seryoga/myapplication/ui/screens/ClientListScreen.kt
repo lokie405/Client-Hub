@@ -5,22 +5,34 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.media.MediaPlayer
+import android.media.MediaRecorder
 import android.net.Uri
+import java.io.File
 import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.automirrored.filled.Assignment
@@ -48,6 +60,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.seryoga.myapplication.data.*
 import com.seryoga.myapplication.ui.*
@@ -237,13 +250,61 @@ fun ClientListScreen(
     }
 
     val activeRouteSheet by viewModel.activeRouteSheet.collectAsState()
+    var selectedClientIdForTasks by remember { mutableStateOf<Long?>(null) }
+    var showOnlyActiveTasksClients by remember { mutableStateOf(false) }
+
+    val totalClientsWithActiveTasks = remember(clients) {
+        clients.count { client -> client.tasks.any { !it.isCompleted } }
+    }
+    val hasAnyActiveTasks = totalClientsWithActiveTasks > 0
+
+    val displayedClients = remember(clients, showOnlyActiveTasksClients) {
+        if (showOnlyActiveTasksClients) {
+            clients.filter { client -> client.tasks.any { !it.isCompleted } }
+        } else {
+            clients
+        }
+    }
+
+    if (selectedClientIdForTasks != null) {
+        val clientObj = clients.find { it.client.id == selectedClientIdForTasks }
+        val clientName = clientObj?.client?.shopName ?: ""
+        ClientTasksDialog(
+            clientId = selectedClientIdForTasks!!,
+            clientName = clientName,
+            onDismiss = { selectedClientIdForTasks = null },
+            viewModel = viewModel
+        )
+    }
 
     Scaffold(
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("Клієнти (${clients.size})", fontWeight = FontWeight.Bold) },
+                title = {
+                    val titleText = if (showOnlyActiveTasksClients) {
+                        "Завдання: ${displayedClients.size}"
+                    } else {
+                        "Клієнти (${displayedClients.size})"
+                    }
+                    Text(titleText, fontWeight = FontWeight.Bold)
+                },
                 actions = {
+                    IconButton(onClick = { showOnlyActiveTasksClients = !showOnlyActiveTasksClients }) {
+                        Box(
+                            modifier = if (showOnlyActiveTasksClients) {
+                                Modifier
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f), CircleShape)
+                                    .padding(4.dp)
+                            } else Modifier
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AssignmentLate,
+                                contentDescription = "Фільтр за невиконаними завданнями",
+                                tint = if (hasAnyActiveTasks) Color(0xFFF44336) else Color(0xFF4CAF50)
+                            )
+                        }
+                    }
                     IconButton(onClick = onRouteSheetClick) { Icon(Icons.AutoMirrored.Filled.AltRoute, "Маршрутник") }
                     IconButton(onClick = onRouteJournalClick) { Icon(Icons.Default.History, "Журнал") }
                     IconButton(onClick = { routePickerLauncher.launch(arrayOf("application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) }) { Icon(Icons.Default.Map, "Завантажити маршрут") }
@@ -255,12 +316,13 @@ fun ClientListScreen(
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(top = padding.calculateTopPadding()).imePadding()) {
             LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(clients) { client ->
+                items(displayedClients) { client ->
                     ClientCard(
                         clientWithDetails = client,
                         activeRouteSheet = activeRouteSheet,
                         onClick = { onClientClick(client.client.id) },
                         onCallClick = { selectedClientForPhones = client.client.id },
+                        onTasksClick = { selectedClientIdForTasks = client.client.id },
                         labelCounts = labelCounts,
                         searchQuery = searchQuery
                     )
@@ -316,6 +378,7 @@ fun ClientCard(
     activeRouteSheet: RouteSheetWithItems? = null,
     onClick: () -> Unit,
     onCallClick: () -> Unit,
+    onTasksClick: () -> Unit = {},
     labelCounts: Map<String?, Int>,
     searchQuery: String
 ) {
@@ -369,7 +432,7 @@ fun ClientCard(
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    clientWithDetails.names.forEach { name -> HighlightedText(text = name.fullName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color.White) }
+                    clientWithDetails.names.filter { it.fullName.isNotBlank() }.forEach { name -> HighlightedText(text = name.fullName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color.White) }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         HighlightedText(text = client.shopName, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                         if (hasNotes) {
@@ -426,6 +489,14 @@ fun ClientCard(
                             Icon(Icons.Default.Place, "Показати на карті", tint = pinIconTint, modifier = Modifier.size(20.dp))
                         }
                         IconButton(onClick = onCallClick) { Icon(Icons.Default.Phone, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) }
+                    }
+                    Spacer(modifier = Modifier.height(2.dp))
+                    val taskTint = getTaskIconTint(clientWithDetails.tasks)
+                    IconButton(
+                        onClick = onTasksClick,
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(Icons.Default.Checklist, "Завдання", tint = taskTint, modifier = Modifier.size(20.dp))
                     }
                 }
             }
@@ -549,6 +620,1035 @@ fun PhoneNumbersDialog(clientId: Long, onDismiss: () -> Unit, viewModel: ClientV
                 TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Закрити") }
             }
         }
+    }
+}
+@Composable
+fun ZoomableImageViewer(
+    uri: String,
+    onDismiss: () -> Unit
+) {
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            val newScale = (scale * zoom).coerceIn(1f, 6f)
+                            if (newScale > 1f) {
+                                val maxX = (size.width * (newScale - 1)) / 2f
+                                val maxY = (size.height * (newScale - 1)) / 2f
+                                offset = Offset(
+                                    x = (offset.x + pan.x).coerceIn(-maxX, maxX),
+                                    y = (offset.y + pan.y).coerceIn(-maxY, maxY)
+                                )
+                            } else {
+                                offset = Offset.Zero
+                            }
+                            scale = newScale
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                AsyncImage(
+                    model = uri,
+                    contentDescription = "Зображення",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer(
+                            scaleX = scale,
+                            scaleY = scale,
+                            translationX = offset.x,
+                            translationY = offset.y
+                        ),
+                    contentScale = ContentScale.Fit
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+                    .statusBarsPadding(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Text(
+                        text = "Масштаб: ${(scale * 100).toInt()}%",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (scale > 1f) {
+                        IconButton(
+                            onClick = {
+                                scale = 1f
+                                offset = Offset.Zero
+                            },
+                            modifier = Modifier.background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                        ) {
+                            Icon(Icons.Default.RestartAlt, "Скинути масштаб", tint = Color.White)
+                        }
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                    ) {
+                        Icon(Icons.Default.Close, "Закрити", tint = Color.White)
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum class MediaTarget { CREATE, EDIT }
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+fun ClientTasksDialog(
+    clientId: Long,
+    clientName: String,
+    onDismiss: () -> Unit,
+    viewModel: ClientViewModel
+) {
+    val context = LocalContext.current
+    val tasksFlow = remember(clientId) { viewModel.getTasksForClient(clientId) }
+    val tasks by tasksFlow.collectAsState(initial = emptyList())
+
+    // Creation section state
+    var showCreateSection by remember { mutableStateOf(false) }
+    var selectedPresetTitle by remember { mutableStateOf("Залишили накладні на пропечатку") }
+    var customTitleInput by remember { mutableStateOf("") }
+    var customText by remember { mutableStateOf("") }
+    var photoUris by remember { mutableStateOf<List<String>>(emptyList()) }
+    var audioUris by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    // Editing section state
+    var taskToEdit by remember { mutableStateOf<TaskEntity?>(null) }
+    var editPresetTitle by remember { mutableStateOf("Залишили накладні на пропечатку") }
+    var editCustomTitleInput by remember { mutableStateOf("") }
+    var editCustomText by remember { mutableStateOf("") }
+    var editPhotoUris by remember { mutableStateOf<List<String>>(emptyList()) }
+    var editAudioUris by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    // Media targets & dialogs
+    var targetMediaTarget by remember { mutableStateOf(MediaTarget.CREATE) }
+    var showPhotoOptionsDialog by remember { mutableStateOf(false) }
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+
+    var fullImageUriToPreview by remember { mutableStateOf<String?>(null) }
+
+    // Audio recording & playback state
+    var isRecordingAudio by remember { mutableStateOf(false) }
+    var recordingTarget by remember { mutableStateOf(MediaTarget.CREATE) }
+    var mediaRecorder by remember { mutableStateOf<MediaRecorder?>(null) }
+    var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var playingAudioUri by remember { mutableStateOf<String?>(null) }
+
+    val presetTitles = listOf(
+        "Залишили накладні на пропечатку",
+        "Довезти товар",
+        "Пропечатати накладні",
+        "Інше"
+    )
+
+    // Launchers
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success && pendingCameraUri != null) {
+            val uriStr = pendingCameraUri.toString()
+            if (targetMediaTarget == MediaTarget.EDIT) {
+                editPhotoUris = (editPhotoUris + uriStr).distinct()
+            } else {
+                photoUris = (photoUris + uriStr).distinct()
+            }
+        }
+    }
+
+    val captureVideoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CaptureVideo()
+    ) { success ->
+        if (success && pendingCameraUri != null) {
+            val uriStr = pendingCameraUri.toString()
+            if (targetMediaTarget == MediaTarget.EDIT) {
+                editPhotoUris = (editPhotoUris + uriStr).distinct()
+            } else {
+                photoUris = (photoUris + uriStr).distinct()
+            }
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            showPhotoOptionsDialog = true
+        } else {
+            Toast.makeText(context, "Необхідно надати дозвіл на використання камери", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            val uriStrings = uris.map { uri ->
+                try {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (_: Exception) {}
+                uri.toString()
+            }
+            if (targetMediaTarget == MediaTarget.EDIT) {
+                editPhotoUris = (editPhotoUris + uriStrings).distinct()
+            } else {
+                photoUris = (photoUris + uriStrings).distinct()
+            }
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            try {
+                val audioFile = File(context.cacheDir, "task_audio_${System.currentTimeMillis()}.mp3")
+                val recorder = MediaRecorder().apply {
+                    setAudioSource(MediaRecorder.AudioSource.MIC)
+                    setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                    setOutputFile(audioFile)
+                    prepare()
+                    start()
+                }
+                mediaRecorder = recorder
+                isRecordingAudio = true
+                val newAudioUri = Uri.fromFile(audioFile).toString()
+                if (recordingTarget == MediaTarget.EDIT) {
+                    editAudioUris = editAudioUris + newAudioUri
+                } else {
+                    audioUris = audioUris + newAudioUri
+                }
+            } catch (e: Exception) {
+                Toast.makeText(context, "Не вдалося розпочати запис", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(context, "Немає дозволу на мікрофон", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun launchCameraPhoto(target: MediaTarget) {
+        try {
+            targetMediaTarget = target
+            val photoFile = File(context.cacheDir, "task_photo_${System.currentTimeMillis()}.jpg")
+            val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+            pendingCameraUri = uri
+            takePictureLauncher.launch(uri)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Не вдалося відкрити камеру: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun launchCameraVideo(target: MediaTarget) {
+        try {
+            targetMediaTarget = target
+            val videoFile = File(context.cacheDir, "task_video_${System.currentTimeMillis()}.mp4")
+            val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", videoFile)
+            pendingCameraUri = uri
+            captureVideoLauncher.launch(uri)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Не вдалося відкрити відеокамеру: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun startOrStopRecording(target: MediaTarget) {
+        recordingTarget = target
+        if (isRecordingAudio) {
+            try {
+                mediaRecorder?.stop()
+                mediaRecorder?.release()
+            } catch (_: Exception) {}
+            mediaRecorder = null
+            isRecordingAudio = false
+        } else {
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            try {
+                mediaRecorder?.stop()
+                mediaRecorder?.release()
+            } catch (_: Exception) {}
+            try {
+                mediaPlayer?.stop()
+                mediaPlayer?.release()
+            } catch (_: Exception) {}
+        }
+    }
+
+    if (showPhotoOptionsDialog) {
+        AlertDialog(
+            onDismissRequest = { showPhotoOptionsDialog = false },
+            title = { Text("Оберіть джерело медіа") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            showPhotoOptionsDialog = false
+                            launchCameraPhoto(targetMediaTarget)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.CameraAlt, null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Зробити фото (Камера)")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            showPhotoOptionsDialog = false
+                            launchCameraVideo(targetMediaTarget)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Videocam, null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Записати відео (Камера)")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            showPhotoOptionsDialog = false
+                            photoPickerLauncher.launch(arrayOf("image/*", "video/*"))
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Image, null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Обрати з галереї / файлів")
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showPhotoOptionsDialog = false }) {
+                    Text("Скасувати")
+                }
+            }
+        )
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Список завдань",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (clientName.isNotBlank()) {
+                            Text(
+                                text = clientName,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, "Закрити")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                if (!showCreateSection) {
+                    Button(
+                        onClick = { showCreateSection = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Add, null)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Створити нове завдання")
+                    }
+                } else {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = "Виберіть тип завдання:",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            presetTitles.forEach { preset ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { selectedPresetTitle = preset }
+                                        .padding(vertical = 2.dp)
+                                ) {
+                                    RadioButton(
+                                        selected = (selectedPresetTitle == preset),
+                                        onClick = { selectedPresetTitle = preset }
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = preset,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (selectedPresetTitle == preset) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+
+                            if (selectedPresetTitle == "Інше") {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                OutlinedTextField(
+                                    value = customTitleInput,
+                                    onValueChange = { customTitleInput = it },
+                                    label = { Text("Вкажіть назву завдання") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            OutlinedTextField(
+                                value = customText,
+                                onValueChange = { customText = it },
+                                label = { Text("Коментар / Додатковий текст") },
+                                modifier = Modifier.fillMaxWidth(),
+                                maxLines = 3
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Photo Section (Multiple)
+                            Text("Фото / Відео:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            if (photoUris.isNotEmpty()) {
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                ) {
+                                    items(photoUris, key = { it }) { uri ->
+                                        Box(
+                                            modifier = Modifier
+                                                .size(72.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                                        ) {
+                                            AsyncImage(
+                                                model = uri,
+                                                contentDescription = "Медіа",
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .clickable { fullImageUriToPreview = uri },
+                                                contentScale = ContentScale.Crop
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(22.dp)
+                                                    .align(Alignment.TopEnd)
+                                                    .background(Color.Black.copy(alpha = 0.7f), CircleShape)
+                                                    .clickable { photoUris = photoUris.filter { it != uri } },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(Icons.Default.Close, "Видалити", tint = Color.White, modifier = Modifier.size(14.dp))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    targetMediaTarget = MediaTarget.CREATE
+                                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.AddAPhoto, null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(if (photoUris.isEmpty()) "Додати фото або відео" else "Додати ще фото/відео (${photoUris.size})", style = MaterialTheme.typography.labelMedium)
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Audio Section (Multiple)
+                            Text("Записи диктофону (Аудіо):", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            if (audioUris.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+                                    audioUris.forEachIndexed { index, uri ->
+                                        val isPlaying = playingAudioUri == uri
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    if (isPlaying) {
+                                                        try { mediaPlayer?.stop(); mediaPlayer?.release() } catch (_: Exception) {}
+                                                        mediaPlayer = null
+                                                        playingAudioUri = null
+                                                    } else {
+                                                        try {
+                                                            mediaPlayer?.stop(); mediaPlayer?.release()
+                                                            mediaPlayer = MediaPlayer().apply {
+                                                                setDataSource(context, Uri.parse(uri))
+                                                                prepare()
+                                                                setOnCompletionListener { playingAudioUri = null }
+                                                                start()
+                                                            }
+                                                            playingAudioUri = uri
+                                                        } catch (e: Exception) {
+                                                            Toast.makeText(context, "Не вдалося відтворити запис", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    }
+                                                },
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow, null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text(if (isPlaying) "Стоп" else "Аудіозапис ${index + 1} ▶", style = MaterialTheme.typography.labelSmall)
+                                            }
+
+                                            IconButton(onClick = { audioUris = audioUris.filter { it != uri } }) {
+                                                Icon(Icons.Default.Delete, "Видалити", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = { startOrStopRecording(MediaTarget.CREATE) },
+                                colors = if (isRecordingAudio && recordingTarget == MediaTarget.CREATE) ButtonDefaults.outlinedButtonColors(containerColor = Color(0xFFFFEBEE)) else ButtonDefaults.outlinedButtonColors(),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    imageVector = if (isRecordingAudio && recordingTarget == MediaTarget.CREATE) Icons.Default.Stop else Icons.Default.Mic,
+                                    contentDescription = null,
+                                    tint = if (isRecordingAudio && recordingTarget == MediaTarget.CREATE) Color.Red else MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (isRecordingAudio && recordingTarget == MediaTarget.CREATE) "Запис... [Стоп]" else if (audioUris.isEmpty()) "Записати аудіо" else "Записати ще аудіо (${audioUris.size})",
+                                    color = if (isRecordingAudio && recordingTarget == MediaTarget.CREATE) Color.Red else MaterialTheme.colorScheme.primary,
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(onClick = {
+                                    showCreateSection = false
+                                    customTitleInput = ""
+                                    customText = ""
+                                    photoUris = emptyList()
+                                    audioUris = emptyList()
+                                }) {
+                                    Text("Скасувати")
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Button(onClick = {
+                                    val finalTitle = if (selectedPresetTitle == "Інше") customTitleInput.ifBlank { "Інше" } else selectedPresetTitle
+                                    viewModel.addTask(
+                                        clientId = clientId,
+                                        title = finalTitle,
+                                        commentText = customText.trim(),
+                                        photoUri = encodeUrisList(photoUris),
+                                        audioUri = encodeUrisList(audioUris)
+                                    )
+                                    showCreateSection = false
+                                    customTitleInput = ""
+                                    customText = ""
+                                    photoUris = emptyList()
+                                    audioUris = emptyList()
+                                }) {
+                                    Text("Створити")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                if (tasks.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Немає створених завдань",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(tasks, key = { it.id }) { task ->
+                            val creationDateStr = remember(task.createdTimestamp) {
+                                SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(task.createdTimestamp))
+                            }
+                            val taskPhotoUris = remember(task.photoUri) { task.getPhotoUris() }
+                            val taskAudioUris = remember(task.audioUri) { task.getAudioUris() }
+
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .combinedClickable(
+                                        onClick = {},
+                                        onLongClick = {
+                                            taskToEdit = task
+                                            editPresetTitle = if (presetTitles.contains(task.title)) task.title else "Інше"
+                                            editCustomTitleInput = if (!presetTitles.contains(task.title)) task.title else ""
+                                            editCustomText = task.commentText
+                                            editPhotoUris = task.getPhotoUris()
+                                            editAudioUris = task.getAudioUris()
+                                        }
+                                    ),
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    color = if (task.isCompleted) Color(0xFF4CAF50) else Color(0xFFF44336)
+                                ),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (task.isCompleted) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surface
+                                )
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Checkbox(
+                                                checked = task.isCompleted,
+                                                onCheckedChange = { viewModel.toggleTaskCompleted(task) }
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Column {
+                                                Text(
+                                                    text = task.title,
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (task.isCompleted) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface
+                                                )
+                                                Text(
+                                                    text = "Створено: $creationDateStr",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.outline
+                                                )
+                                            }
+                                        }
+
+                                        Row {
+                                            IconButton(onClick = {
+                                                taskToEdit = task
+                                                editPresetTitle = if (presetTitles.contains(task.title)) task.title else "Інше"
+                                                editCustomTitleInput = if (!presetTitles.contains(task.title)) task.title else ""
+                                                editCustomText = task.commentText
+                                                editPhotoUris = task.getPhotoUris()
+                                                editAudioUris = task.getAudioUris()
+                                            }) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Edit,
+                                                    contentDescription = "Редагувати",
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+
+                                            IconButton(onClick = { viewModel.deleteTask(task) }) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = "Видалити",
+                                                    tint = MaterialTheme.colorScheme.error
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    if (task.commentText.isNotBlank()) {
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = task.commentText,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+
+                                    if (taskPhotoUris.isNotEmpty()) {
+                                        LazyRow(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.padding(top = 6.dp)
+                                        ) {
+                                            items(taskPhotoUris) { uri ->
+                                                AsyncImage(
+                                                    model = uri,
+                                                    contentDescription = "Фото завдання",
+                                                    modifier = Modifier
+                                                        .size(80.dp)
+                                                        .clip(RoundedCornerShape(8.dp))
+                                                        .clickable { fullImageUriToPreview = uri },
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    if (taskAudioUris.isNotEmpty()) {
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                                            modifier = Modifier.padding(top = 6.dp)
+                                        ) {
+                                            taskAudioUris.forEachIndexed { index, uri ->
+                                                val isThisAudioPlaying = playingAudioUri == uri
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        if (isThisAudioPlaying) {
+                                                            try { mediaPlayer?.stop(); mediaPlayer?.release() } catch (_: Exception) {}
+                                                            mediaPlayer = null
+                                                            playingAudioUri = null
+                                                        } else {
+                                                            try {
+                                                                mediaPlayer?.stop(); mediaPlayer?.release()
+                                                                mediaPlayer = MediaPlayer().apply {
+                                                                    setDataSource(context, Uri.parse(uri))
+                                                                    prepare()
+                                                                    setOnCompletionListener { playingAudioUri = null }
+                                                                    start()
+                                                                }
+                                                                playingAudioUri = uri
+                                                            } catch (e: Exception) {
+                                                                Toast.makeText(context, "Не вдалося відтворити запис", Toast.LENGTH_SHORT).show()
+                                                            }
+                                                        }
+                                                    }
+                                                ) {
+                                                    Icon(
+                                                        imageVector = if (isThisAudioPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(
+                                                        text = if (isThisAudioPlaying) "Стоп" else if (taskAudioUris.size > 1) "Аудіозапис ${index + 1} ▶" else "Аудіозапис ▶",
+                                                        style = MaterialTheme.typography.labelSmall
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Editing Dialog Modal
+    if (taskToEdit != null) {
+        Dialog(
+            onDismissRequest = { taskToEdit = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(16.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Редагувати завдання",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(onClick = { taskToEdit = null }) {
+                            Icon(Icons.Default.Close, "Закрити")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text("Виберіть тип завдання:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    presetTitles.forEach { preset ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { editPresetTitle = preset }
+                                .padding(vertical = 2.dp)
+                        ) {
+                            RadioButton(
+                                selected = (editPresetTitle == preset),
+                                onClick = { editPresetTitle = preset }
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = preset,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (editPresetTitle == preset) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+
+                    if (editPresetTitle == "Інше") {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = editCustomTitleInput,
+                            onValueChange = { editCustomTitleInput = it },
+                            label = { Text("Вкажіть назву завдання") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = editCustomText,
+                        onValueChange = { editCustomText = it },
+                        label = { Text("Коментар / Додатковий текст") },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 3
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Photo section
+                    Text("Фото / Відео:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    if (editPhotoUris.isNotEmpty()) {
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        ) {
+                            items(editPhotoUris, key = { it }) { uri ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(72.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                                ) {
+                                    AsyncImage(
+                                        model = uri,
+                                        contentDescription = "Медіа",
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clickable { fullImageUriToPreview = uri },
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .align(Alignment.TopEnd)
+                                            .background(Color.Black.copy(alpha = 0.7f), CircleShape)
+                                            .clickable { editPhotoUris = editPhotoUris.filter { it != uri } },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(Icons.Default.Close, "Видалити", tint = Color.White, modifier = Modifier.size(14.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            targetMediaTarget = MediaTarget.EDIT
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.AddAPhoto, null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (editPhotoUris.isEmpty()) "Додати фото або відео" else "Додати ще фото/відео (${editPhotoUris.size})", style = MaterialTheme.typography.labelMedium)
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Audio section
+                    Text("Записи диктофону (Аудіо):", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    if (editAudioUris.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+                            editAudioUris.forEachIndexed { index, uri ->
+                                val isEditingAudioPlaying = playingAudioUri == uri
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            if (isEditingAudioPlaying) {
+                                                try { mediaPlayer?.stop(); mediaPlayer?.release() } catch (_: Exception) {}
+                                                mediaPlayer = null
+                                                playingAudioUri = null
+                                            } else {
+                                                try {
+                                                    mediaPlayer?.stop(); mediaPlayer?.release()
+                                                    mediaPlayer = MediaPlayer().apply {
+                                                        setDataSource(context, Uri.parse(uri))
+                                                        prepare()
+                                                        setOnCompletionListener { playingAudioUri = null }
+                                                        start()
+                                                    }
+                                                    playingAudioUri = uri
+                                                } catch (_: Exception) {
+                                                    Toast.makeText(context, "Не вдалося відтворити запис", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isEditingAudioPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(if (isEditingAudioPlaying) "Стоп" else "Аудіозапис ${index + 1} ▶", style = MaterialTheme.typography.labelSmall)
+                                    }
+
+                                    IconButton(onClick = { editAudioUris = editAudioUris.filter { it != uri } }) {
+                                        Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            startOrStopRecording(MediaTarget.EDIT)
+                        },
+                        colors = if (isRecordingAudio && recordingTarget == MediaTarget.EDIT) ButtonDefaults.outlinedButtonColors(containerColor = Color(0xFFFFEBEE)) else ButtonDefaults.outlinedButtonColors(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = if (isRecordingAudio && recordingTarget == MediaTarget.EDIT) Icons.Default.Stop else Icons.Default.Mic,
+                            contentDescription = null,
+                            tint = if (isRecordingAudio && recordingTarget == MediaTarget.EDIT) Color.Red else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isRecordingAudio && recordingTarget == MediaTarget.EDIT) "Запис... [Стоп]" else if (editAudioUris.isEmpty()) "Записати аудіо" else "Записати ще аудіо (${editAudioUris.size})",
+                            color = if (isRecordingAudio && recordingTarget == MediaTarget.EDIT) Color.Red else MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = { taskToEdit = null }) {
+                            Text("Скасувати")
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(onClick = {
+                            val finalTitle = if (editPresetTitle == "Інше") editCustomTitleInput.ifBlank { "Інше" } else editPresetTitle
+                            viewModel.updateTask(
+                                taskToEdit!!.copy(
+                                    title = finalTitle,
+                                    commentText = editCustomText.trim(),
+                                    photoUri = encodeUrisList(editPhotoUris),
+                                    audioUri = encodeUrisList(editAudioUris)
+                                )
+                            )
+                            taskToEdit = null
+                        }) {
+                            Text("Зберегти")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (fullImageUriToPreview != null) {
+        ZoomableImageViewer(
+            uri = fullImageUriToPreview!!,
+            onDismiss = { fullImageUriToPreview = null }
+        )
     }
 }
 

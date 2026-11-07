@@ -60,6 +60,7 @@ import com.seryoga.myapplication.data.RouteSheetItemEntity
 import com.seryoga.myapplication.ui.ClientGeoDetails
 import com.seryoga.myapplication.ui.ClientViewModel
 import com.seryoga.myapplication.ui.extractUrlFromText
+import com.seryoga.myapplication.ui.getTaskIconTint
 import com.seryoga.myapplication.ui.isCoordinatesFieldFilled
 import com.seryoga.myapplication.ui.isHttpsCoordinates
 import kotlinx.coroutines.coroutineScope
@@ -202,6 +203,19 @@ fun RouteSheetScreen(
                 viewModel.updateRouteItemNote(selectedItemForNote!!, text, audio, photo, file)
                 selectedItemForNote = null
             }
+        )
+    }
+
+    var selectedClientIdForTasks by remember { mutableStateOf<Long?>(null) }
+
+    if (selectedClientIdForTasks != null) {
+        val clientObj = allClients.find { it.client.id == selectedClientIdForTasks }
+        val clientName = clientObj?.client?.shopName ?: ""
+        ClientTasksDialog(
+            clientId = selectedClientIdForTasks!!,
+            clientName = clientName,
+            onDismiss = { selectedClientIdForTasks = null },
+            viewModel = viewModel
         )
     }
 
@@ -540,6 +554,7 @@ fun RouteSheetScreen(
                                     },
                                     onEditNote = { selectedItemForNote = item },
                                     onCallClient = { clientId -> selectedClientIdForCalls = clientId },
+                                    onTasksClick = { clientId -> selectedClientIdForTasks = clientId },
                                     onGetClientAddressAndCoords = { clientId -> viewModel.getClientAddressAndCoords(clientId) },
                                     onGetClientGeoDetails = { clientId -> viewModel.getClientGeoDetails(clientId) },
                                     onOpenClientDetail = onOpenClientDetail,
@@ -576,6 +591,7 @@ fun RouteItemCard(
     onDoubleTapNumber: () -> Unit,
     onEditNote: () -> Unit,
     onCallClient: (clientId: Long) -> Unit,
+    onTasksClick: (clientId: Long) -> Unit = {},
     onGetClientAddressAndCoords: suspend (clientId: Long) -> Triple<String?, Double?, Double?>,
     onGetClientGeoDetails: suspend (clientId: Long) -> ClientGeoDetails,
     onOpenClientDetail: (clientId: Long) -> Unit,
@@ -852,16 +868,22 @@ fun RouteItemCard(
 
                 Spacer(modifier = Modifier.height(2.dp))
 
-                // Middle Row: Client Name ("Клієнт") - Color #A5D6A7 if has coords record, #F48FB1 if no coords record
-                // Middle Row: Client Name ("Клієнт") - Color.White
-                if (effectiveName.isNotBlank()) {
+                // Middle Row: Client Names ("Клієнт") - Each name rendered on its own line below the previous name in Color.White
+                if (!liveNames.isNullOrEmpty()) {
+                    liveNames.filter { it.fullName.isNotBlank() }.forEach { n ->
+                        Text(
+                            text = n.fullName,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                } else if (item.clientNameSnapshot.isNotBlank()) {
                     Text(
-                        text = effectiveName,
+                        text = item.clientNameSnapshot,
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        color = Color.White
                     )
                 }
 
@@ -938,11 +960,31 @@ fun RouteItemCard(
 
                     Spacer(modifier = Modifier.width(4.dp))
 
-                    // Action Buttons Row (Directions, Call, Note)
+                    // Action Buttons Row (Tasks, Directions, Call, Note)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
+                        // Tasks button (To the LEFT of Map Pin icon)
+                        val clientTasks = clientWithDetails?.tasks ?: emptyList()
+                        val taskTint = getTaskIconTint(clientTasks)
+
+                        IconButton(
+                            onClick = {
+                                if (item.clientId != 0L) {
+                                    onTasksClick(item.clientId)
+                                }
+                            },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Checklist,
+                                contentDescription = "Завдання",
+                                tint = taskTint,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
                         // Map Pin button («Показати на карті»)
                         IconButton(
                             onClick = {

@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.CallLog
 import android.util.Log
+import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.android.gms.location.LocationServices
@@ -57,13 +58,39 @@ data class ClientGeoDetails(
     val coordinatesManual: String?
 )
 
-fun cleanTextForCopy(text: String): String {
+fun getTaskIconTint(tasks: List<TaskEntity>): androidx.compose.ui.graphics.Color {
+    if (tasks.isEmpty()) return androidx.compose.ui.graphics.Color(0xFF9E9E9E)
+    val hasActive = tasks.any { !it.isCompleted }
+    return if (hasActive) androidx.compose.ui.graphics.Color(0xFFF44336) else androidx.compose.ui.graphics.Color(0xFF4CAF50)
+}
+
+fun normalizeCyrillicLookalikes(text: String): String {
     if (text.isBlank()) return ""
     return text
+        .replace('i', 'і')
+        .replace('I', 'І')
+        .replace('e', 'е')
+        .replace('E', 'Е')
+        .replace('o', 'о')
+        .replace('O', 'О')
+        .replace('a', 'а')
+        .replace('A', 'А')
+        .replace('c', 'с')
+        .replace('C', 'С')
+        .replace('p', 'р')
+        .replace('P', 'Р')
+        .replace('x', 'х')
+        .replace('X', 'Х')
+}
+
+fun cleanTextForCopy(text: String): String {
+    if (text.isBlank()) return ""
+    val cleaned = text
         .replace(Regex("""(?i)\b(ФОП|маг\.|м-н\.|маг|м-н)\b\.?"""), "")
         .replace(Regex("""(?i)^[,\.\s:\-—"“'«»]+|[,\.\s:\-—"“'«»]+$"""), "")
         .replace(Regex("""\s+"""), " ")
         .trim('"', '“', '”', '«', '»', ' ')
+    return normalizeCyrillicLookalikes(cleaned)
 }
 
 fun isHttpsCoordinates(raw: String?): Boolean {
@@ -147,7 +174,9 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
             }
-        }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+        }
+        .catch { e -> Log.e("ClientViewModel", "Error in clients flow", e); emit(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val logSessions: Flow<List<UpdateLogSession>> = clientDao.getAllLogSessions()
 
@@ -457,6 +486,46 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun addNote(clientId: Long, content: String) { viewModelScope.launch { clientDao.insertNote(NoteEntity(clientId = clientId, content = content)) } }
+
+    fun addTask(clientId: Long, title: String, commentText: String = "", photoUri: String? = null, audioUri: String? = null) {
+        viewModelScope.launch {
+            clientDao.insertTask(
+                TaskEntity(
+                    clientId = clientId,
+                    title = title,
+                    commentText = commentText,
+                    photoUri = photoUri,
+                    audioUri = audioUri,
+                    createdTimestamp = System.currentTimeMillis(),
+                    isCompleted = false
+                )
+            )
+            autoExportData()
+        }
+    }
+
+    fun updateTask(task: TaskEntity) {
+        viewModelScope.launch {
+            clientDao.updateTask(task)
+            autoExportData()
+        }
+    }
+
+    fun toggleTaskCompleted(task: TaskEntity) {
+        viewModelScope.launch {
+            clientDao.updateTask(task.copy(isCompleted = !task.isCompleted))
+            autoExportData()
+        }
+    }
+
+    fun deleteTask(task: TaskEntity) {
+        viewModelScope.launch {
+            clientDao.deleteTask(task)
+            autoExportData()
+        }
+    }
+
+    fun getTasksForClient(clientId: Long): Flow<List<TaskEntity>> = clientDao.getTasksForClient(clientId)
     suspend fun getClient(id: Long): ClientWithDetails? = clientDao.getClientById(id)
     fun deleteClient(clientWithDetails: ClientWithDetails) { viewModelScope.launch { clientDao.deleteClient(clientWithDetails.client); clientDao.deleteNamesForClient(clientWithDetails.client.id); clientDao.deletePhonesForClient(clientWithDetails.client.id); autoExportData() } }
 
@@ -560,37 +629,43 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     val existingDNumbers = currentDbClients.mapNotNull { Regex("""^D(\d+)D$""", RegexOption.IGNORE_CASE).find(it.client.label ?: "")?.groupValues?.get(1)?.toIntOrNull() }
                     var dCount = maxOf(currentDbClients.count { it.client.label?.uppercase()?.startsWith("D") == true }, existingDNumbers.maxOrNull() ?: 0)
 
-                    fun findExistingClientInList(targetLabel: String?, targetShop: String, targetCity: String, targetName: String): ClientWithDetails? {
-                        val cleanShop = cleanTextForCopy(targetShop).lowercase()
-                        val cleanCity = targetCity.trim().lowercase()
-                        val cleanName = cleanTextForCopy(targetName).lowercase()
-                        val cleanLabel = targetLabel?.trim()?.uppercase()
-
-                        if (!cleanLabel.isNullOrBlank()) {
-                            val match = currentDbClients.firstOrNull { c -> c.client.label?.trim()?.equals(cleanLabel, ignoreCase = true) == true }
-                            if (match != null) return match
+                    fun findExistingClientByLabel(targetLabel: String): ClientWithDetails? {
+                        if (targetLabel.isBlank()) return null
+                        val cleanLabel = normalizeCyrillicLookalikes(targetLabel.trim().uppercase())
+                        return currentDbClients.firstOrNull { c -> 
+                            normalizeCyrillicLookalikes(c.client.label?.trim()?.uppercase() ?: "") == cleanLabel
                         }
+                    }
+
+                    fun findExistingClientByShopOrName(targetShop: String, targetCity: String, targetName: String): ClientWithDetails? {
+                        val cleanShop = cleanTextForCopy(targetShop).lowercase()
+                        val cleanCity = cleanTextForCopy(targetCity).lowercase()
+                        val cleanName = cleanTextForCopy(targetName).lowercase()
 
                         if (cleanShop.isNotBlank()) {
-                            val matchCity = currentDbClients.firstOrNull { c ->
+                            val matchShopAndCity = currentDbClients.firstOrNull { c ->
                                 val cShop = cleanTextForCopy(c.client.shopName).lowercase()
-                                val cCity = (c.client.city ?: "").trim().lowercase()
-                                cShop == cleanShop && (cleanCity.isBlank() || cCity == cleanCity || cCity.contains(cleanCity) || cleanCity.contains(cCity))
+                                val cCity = cleanTextForCopy(c.client.city ?: "").lowercase()
+                                cShop == cleanShop && (cleanCity.isBlank() || cCity == cleanCity)
                             }
-                            if (matchCity != null) return matchCity
+                            if (matchShopAndCity != null) return matchShopAndCity
 
-                            val matchShop = currentDbClients.firstOrNull { c ->
+                            val matchShopExact = currentDbClients.firstOrNull { c ->
                                 val cShop = cleanTextForCopy(c.client.shopName).lowercase()
-                                cShop == cleanShop || (cShop.length >= 4 && cleanShop.length >= 4 && (cShop.contains(cleanShop) || cleanShop.contains(cShop)))
+                                val cCity = cleanTextForCopy(c.client.city ?: "").lowercase()
+                                val isCityConflict = cleanCity.isNotBlank() && cCity.isNotBlank() && cleanCity != cCity
+                                cShop == cleanShop && !isCityConflict
                             }
-                            if (matchShop != null) return matchShop
+                            if (matchShopExact != null) return matchShopExact
                         }
 
                         if (cleanName.isNotBlank()) {
                             val matchName = currentDbClients.firstOrNull { c ->
-                                c.names.any { n ->
+                                val cCity = cleanTextForCopy(c.client.city ?: "").lowercase()
+                                val isCityConflict = cleanCity.isNotBlank() && cCity.isNotBlank() && cleanCity != cCity
+                                !isCityConflict && c.names.any { n ->
                                     val cName = cleanTextForCopy(n.fullName).lowercase()
-                                    cName == cleanName || (cName.length >= 5 && cleanName.length >= 5 && (cName.contains(cleanName) || cleanName.contains(cName)))
+                                    cName == cleanName
                                 }
                             }
                             if (matchName != null) return matchName
@@ -599,8 +674,15 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                         return null
                     }
 
+                    Log.d("way", "=== ПОЧАТОК СКАНУВАННЯ ТАБЛИЦІ МАРШРУТНОГО ЛИСТА (Всього рядків: ${sheet.physicalNumberOfRows}, Початковий рядок даних: $dataStartRowIdx) ===")
+
                     for (i in dataStartRowIdx until sheet.physicalNumberOfRows) {
-                        val row = sheet.getRow(i) ?: continue; val nc = if (noI != -1) fmt.formatCellValue(row.getCell(noI)).trim() else ""
+                        val row = sheet.getRow(i)
+                        if (row == null) {
+                            Log.d("way", "[Рядок $i] Рядок порожній (null) -> ПРОПУЩЕНО")
+                            continue
+                        }
+                        val nc = if (noI != -1) fmt.formatCellValue(row.getCell(noI)).trim() else ""
                         val m = anyIdRegex.find(nc)
                         val city = if (ciI != -1) fmt.formatCellValue(row.getCell(ciI)).trim() else ""
                         val shop = if (shI != -1) fmt.formatCellValue(row.getCell(shI)).trim() else ""
@@ -613,49 +695,175 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                         val weightKg = if (rawWeight > 0.0 && rawWeight < 30.0) rawWeight * 1000.0 else rawWeight
                         val amountSum = if (sumI != -1) parseNumericCellValue(row.getCell(sumI)) else 0.0
 
-                        if (name.isBlank() && shop.isBlank()) continue
+                        Log.d("way", "--------------------------------------------------")
+                        Log.d("way", "[Рядок $i] СКАНУВАННЯ: ТРТ='$shop' | Клієнт='$name' | Місто='$city' | Примітка='$nc' | Адреса='$addr' | Тел=$phones | Заявка='$orderNumber' | Вага=$weightKg кг | Сума=$amountSum грн")
+
+                        if (name.isBlank() && shop.isBlank()) {
+                            Log.d("way", "[Рядок $i] РІШЕННЯ: ПРОПУСТИТИ. Причина: Назва магазину (ТРТ) та ПІБ клієнта порожні.")
+                            continue
+                        }
 
                         val label: String
                         val en: String
                         val existing: ClientWithDetails?
 
                         if (m != null) {
-                            label = m.value.trim().uppercase()
+                            label = normalizeCyrillicLookalikes(m.value.trim().uppercase())
                             en = nc.replace(m.value, "").trim().trim(',', '.', ';', ' ', ':', '-', '—')
-                            existing = findExistingClientInList(label, shop, city, name)
+                            // Шукаємо клієнта СУВОРО за міткою з примітки
+                            existing = findExistingClientByLabel(label)
+                            if (existing != null) {
+                                Log.d("way", "[Рядок $i] МІТКА: Знайдено в примітці -> '$label'. Клієнта з міткою '$label' ЗНАЙДЕНО в БД (ID=${existing.client.id}).")
+                            } else {
+                                Log.d("way", "[Рядок $i] МІТКА: Знайдено в примітці -> '$label'. Мітка НОВА, клієнта з міткою '$label' немає в БД.")
+                            }
                         } else {
                             en = nc.trim().trim(',', '.', ';', ' ', ':', '-', '—')
-                            val duplicate = findExistingClientInList(null, shop, city, name)
+                            Log.d("way", "[Рядок $i] МІТКА: У примітці мітку не знайдено.")
+                            val duplicate = findExistingClientByShopOrName(shop, city, name)
                             if (duplicate != null) {
                                 existing = duplicate
                                 label = duplicate.client.label ?: ""
+                                Log.d("way", "[Рядок $i] МІТКА: Визначено за існуючим клієнтом в БД (ID=${duplicate.client.id}) -> '$label'")
                             } else {
                                 existing = null
                                 dCount++
                                 label = "D${dCount}D"
+                                Log.d("way", "[Рядок $i] МІТКА: Згенеровано нову тимчасову мітку D-класу -> '$label'")
                             }
                         }
 
                         if (existing == null) {
+                            Log.d("way", "[Рядок $i] РІШЕННЯ: ДОДАТИ НОВОГО КЛІЄНТА (Збігів у БД не знайдено)")
+                            val cleanNameForNew = cleanTextForCopy(name).ifBlank { name }
                             val nid = clientDao.insertClient(ClientEntity(shopName = shop, city = city.ifBlank { null }, addressManual = addr.ifBlank { null }, addressStatus = "unchanged", label = label))
-                            clientDao.insertName(NameEntity(clientId = nid, fullName = name)); phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = nid, phoneNumber = p)) }
+                            clientDao.insertName(NameEntity(clientId = nid, fullName = cleanNameForNew)); phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = nid, phoneNumber = p)) }
                             if (en.isNotBlank()) clientDao.insertNote(NoteEntity(clientId = nid, content = en))
                             added.add("[$label] $shop")
-                            importedRouteClients.add(ImportedRouteClient(nid, label, shop, city.ifBlank { null }, name, orderNumber, weightKg, amountSum))
+                            importedRouteClients.add(ImportedRouteClient(nid, label, shop, city.ifBlank { null }, cleanNameForNew, orderNumber, weightKg, amountSum))
                             clientDao.getClientById(nid)?.let { currentDbClients.add(it) }
+
+                            Log.d("way", "[Рядок $i] ДІЯ ПРИЙНЯТА ТА ЗРОБЛЕНА: Створено нового клієнта ID=$nid з початковими даними в БД [Мітка='$label', ТРТ='$shop', Місто='${city.ifBlank { "null" }}', ПІБ='$cleanNameForNew', Телефони=$phones, Примітка='${en.ifBlank { "немає" }}']")
                         } else {
+                            val dbNamesStr = existing.names.map { "'${it.fullName}'" }.joinToString(", ")
+                            val dbPhonesStr = existing.phones.map { "'${it.phoneNumber}'" }.joinToString(", ")
+                            val dbNotesStr = existing.notes.map { "'${it.content}'" }.joinToString("; ")
+                            
+                            Log.d("way", "[Рядок $i] РІШЕННЯ: ОНОВИТИ ІСНУЮЧОГО КЛІЄНТА")
+                            Log.d("way", "[Рядок $i] [В БД ВЖЕ БУЛО КЛІЄНТА ID=${existing.client.id}] Мітка='${existing.client.label}' | ТРТ='${existing.client.shopName}' (статус: ${existing.client.shopNameStatus}) | Місто='${existing.client.city}' (статус: ${existing.client.cityStatus}) | Імена=[$dbNamesStr] | Телефони=[$dbPhonesStr] | Адреса='${existing.client.addressManual}' | Примітки=[$dbNotesStr]")
+
                             importedRouteClients.add(ImportedRouteClient(existing.client.id, label, shop, city.ifBlank { null }, name, orderNumber, weightKg, amountSum))
-                            var cur = existing.client; var changed = false; val mainName = existing.names.firstOrNull()?.fullName ?: ""
-                            if (label.isNotBlank() && cur.label != label) { cur = cur.copy(label = label); changed = true }
-                            if (cur.namesStatus == "changed" && name != mainName && !name.contains("ФОП", true) && existing.names.none { cleanTextForCopy(it.fullName).equals(cleanTextForCopy(name), ignoreCase = true) }) { clientDao.insertName(NameEntity(clientId = cur.id, fullName = name)); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "names", mainName, "Додано: $name")); changed = true }
-                            if (cur.shopNameStatus == "changed" && shop.isNotBlank() && cleanTextForCopy(shop) != cleanTextForCopy(cur.shopName)) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "shopName", cur.shopName, shop)); cur = cur.copy(shopName = shop); changed = true }
-                            if (cur.cityStatus == "changed" && city.isNotBlank() && city != (cur.city ?: "")) { currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "city", cur.city ?: "", city)); cur = cur.copy(city = city); changed = true }
-                            if (cur.phonesStatus == "changed" && phones.isNotEmpty()) { val cp = existing.phones.map { it.phoneNumber }.distinct().sorted(); if (phones != cp) { clientDao.deletePhonesForClient(cur.id); phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = cur.id, phoneNumber = p)) }; currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "phones", cp.joinToString(", "), phones.joinToString(", "))); changed = true } }
-                            if (addr.isNotBlank()) {
-                                if (cur.addressManual.isNullOrBlank()) { cur = cur.copy(addressManual = addr, addressStatus = "unchanged"); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "address", "", addr)); changed = true }
+                            var cur = existing.client
+                            var changed = false
+                            val mainName = existing.names.firstOrNull()?.fullName ?: ""
+                            val actionsDone = mutableListOf<String>()
+
+                            if (label.isNotBlank() && normalizeCyrillicLookalikes(cur.label ?: "") != normalizeCyrillicLookalikes(label)) {
+                                val oldLabel = cur.label
+                                cur = cur.copy(label = label)
+                                changed = true
+                                actionsDone.add("Змінено мітку з '$oldLabel' на '$label'")
+                                Log.d("way", "[Рядок $i] [Заміна мітки] В БД було: '$oldLabel' -> Замінюємо на: '$label'")
+                            } else {
+                                Log.d("way", "[Рядок $i] [Мітка] Без змін (в БД вже було: '${cur.label}')")
                             }
-                            if (cur.notesStatus == "changed" && en.isNotBlank() && existing.notes.none { it.content.trim().equals(en, true) }) { clientDao.insertNote(NoteEntity(clientId = cur.id, content = en)); currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "notes", "...", "Додано: $en")); changed = true }
-                            if (changed) clientDao.insertClient(cur)
+
+                            // Clean FOP/mag prefix and check if clean name exists in client's names list -> Add as additional name
+                            val cleanNameInput = cleanTextForCopy(name)
+                            if (cleanNameInput.isNotBlank()) {
+                                val nameAlreadyExists = existing.names.any {
+                                    val existingClean = cleanTextForCopy(it.fullName)
+                                    existingClean.equals(cleanNameInput, ignoreCase = true) || it.fullName.trim().equals(cleanNameInput, ignoreCase = true)
+                                }
+                                if (!nameAlreadyExists) {
+                                    val newNameEntity = NameEntity(clientId = cur.id, fullName = cleanNameInput)
+                                    clientDao.insertName(newNameEntity)
+                                    currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "names", mainName, "Додано: $cleanNameInput"))
+                                    changed = true
+                                    actionsDone.add("Додано нову назву/ПІБ '$cleanNameInput'")
+                                    Log.d("way", "[Рядок $i] [Додавання імені] В БД вже були імена: [$dbNamesStr] -> Додаємо нове ім'я: '$cleanNameInput'")
+
+                                    // Update memory cache immediately
+                                    clientDao.getClientById(cur.id)?.let { refreshedDetail ->
+                                        val idx = currentDbClients.indexOfFirst { it.client.id == cur.id }
+                                        if (idx != -1) {
+                                            currentDbClients[idx] = refreshedDetail
+                                        }
+                                    }
+                                } else {
+                                    Log.d("way", "[Рядок $i] [ПІБ] Назва/ПІБ '$cleanNameInput' вже є в БД в списку імен: [$dbNamesStr]")
+                                }
+                            }
+
+                            if (cur.shopNameStatus == "changed" && shop.isNotBlank() && cleanTextForCopy(shop) != cleanTextForCopy(cur.shopName)) {
+                                currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "shopName", cur.shopName, shop))
+                                actionsDone.add("Оновлено ТРТ з '${cur.shopName}' на '$shop'")
+                                Log.d("way", "[Рядок $i] [Заміна ТРТ] В БД було: '${cur.shopName}' (статус: ${cur.shopNameStatus}) -> Замінюємо на: '$shop'")
+                                cur = cur.copy(shopName = shop)
+                                changed = true
+                            } else if (shop.isNotBlank() && cleanTextForCopy(shop) != cleanTextForCopy(cur.shopName)) {
+                                Log.d("way", "[Рядок $i] [ТРТ НЕ замінено] В БД лишається: '${cur.shopName}' (заблоковано, статус: ${cur.shopNameStatus}). В таблиці було: '$shop'")
+                            }
+
+                            if (cur.cityStatus == "changed" && city.isNotBlank() && cleanTextForCopy(city) != cleanTextForCopy(cur.city ?: "")) {
+                                currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "city", cur.city ?: "", city))
+                                actionsDone.add("Оновлено місто з '${cur.city}' на '$city'")
+                                Log.d("way", "[Рядок $i] [Заміна міста] В БД було: '${cur.city}' (статус: ${cur.cityStatus}) -> Замінюємо на: '$city'")
+                                cur = cur.copy(city = city)
+                                changed = true
+                            } else if (city.isNotBlank() && cleanTextForCopy(city) != cleanTextForCopy(cur.city ?: "")) {
+                                Log.d("way", "[Рядок $i] [Місто НЕ замінено] В БД лишається: '${cur.city}' (заблоковано, статус: ${cur.cityStatus}). В таблиці було: '$city'")
+                            }
+
+                            val validPhonesInput = phones.filter { p -> p.replace(Regex("[^0-9]"), "").length >= 9 }
+                            if (cur.phonesStatus == "changed" && validPhonesInput.isNotEmpty()) {
+                                val cp = existing.phones.map { it.phoneNumber }.distinct().sorted()
+                                if (validPhonesInput != cp) {
+                                    clientDao.deletePhonesForClient(cur.id)
+                                    validPhonesInput.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = cur.id, phoneNumber = p)) }
+                                    currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "phones", cp.joinToString(", "), validPhonesInput.joinToString(", ")))
+                                    actionsDone.add("Оновлено телефони з '${cp.joinToString(", ")}' на '${validPhonesInput.joinToString(", ")}'")
+                                    Log.d("way", "[Рядок $i] [Заміна телефонів] В БД були телефони: $cp -> Замінюємо на: $validPhonesInput")
+                                    changed = true
+                                } else {
+                                    Log.d("way", "[Рядок $i] [Телефони] В БД вже були такі ж телефони: $cp")
+                                }
+                            } else if (phones.isNotEmpty()) {
+                                Log.d("way", "[Рядок $i] [Телефони НЕ замінено] Некоректний телефон у файлі ($phones) або заблоковано (phonesStatus='${cur.phonesStatus}'). В БД лишаються телефони: $dbPhonesStr")
+                            }
+
+                            if (addr.isNotBlank() && cur.addressManual.isNullOrBlank()) {
+                                cur = cur.copy(addressManual = addr, addressStatus = "unchanged")
+                                currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "address", "", addr))
+                                actionsDone.add("Додано ручну адресу '$addr'")
+                                Log.d("way", "[Рядок $i] [Заповнення адреси] В БД адреси не було (null) -> Встановлюємо ручну адресу: '$addr'")
+                                changed = true
+                            } else if (addr.isNotBlank()) {
+                                Log.d("way", "[Рядок $i] [Адреса НЕ замінена] В БД вже є ручна адреса: '${cur.addressManual}'. В таблиці була: '$addr'")
+                            }
+
+                            if (cur.notesStatus == "changed" && en.isNotBlank() && existing.notes.none { cleanTextForCopy(it.content).equals(cleanTextForCopy(en), ignoreCase = true) }) {
+                                clientDao.insertNote(NoteEntity(clientId = cur.id, content = en))
+                                currentLogs.add(UpdateLogEntry(0, 0, label, mainName, "notes", "...", "Додано: $en"))
+                                actionsDone.add("Додано примітку '$en'")
+                                Log.d("way", "[Рядок $i] [Додавання примітки] В БД вже були примітки: [$dbNotesStr] -> Додаємо нову примітку: '$en'")
+                                changed = true
+                            } else if (en.isNotBlank()) {
+                                Log.d("way", "[Рядок $i] [Примітка НЕ додана] В БД примітка вже існує або notesStatus='${cur.notesStatus}'. В таблиці була: '$en'")
+                            }
+
+                            if (changed) {
+                                clientDao.insertClient(cur)
+                                clientDao.getClientById(cur.id)?.let { updatedDetail ->
+                                    val idx = currentDbClients.indexOfFirst { it.client.id == cur.id }
+                                    if (idx != -1) {
+                                        currentDbClients[idx] = updatedDetail
+                                    }
+                                }
+                                Log.d("way", "[Рядок $i] ДІЯ ПРИЙНЯТА ТА ЗРОБЛЕНА: Клієнта ID=${existing.client.id} успішно оновлено. Виконано оновлення: ${actionsDone.joinToString("; ")}")
+                            } else {
+                                Log.d("way", "[Рядок $i] ДІЯ ПРИЙНЯТА ТА ЗРОБЛЕНА: Оновлення клієнта ID=${existing.client.id} ПРОПУЩЕНО, змін не виявлено (всі поля відповідають БД або заблоковані від оновлення).")
+                            }
                         }
                     }
                     val last3 = importedRouteClients.takeLast(3)

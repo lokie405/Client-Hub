@@ -68,6 +68,24 @@ interface ClientDao {
     @Query("DELETE FROM notes WHERE clientId = :clientId")
     suspend fun deleteNotesForClient(clientId: Long): Unit
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTask(task: TaskEntity): Long
+
+    @Update
+    suspend fun updateTask(task: TaskEntity)
+
+    @Delete
+    suspend fun deleteTask(task: TaskEntity)
+
+    @Query("DELETE FROM client_tasks WHERE clientId = :clientId")
+    suspend fun deleteTasksForClient(clientId: Long): Unit
+
+    @Query("DELETE FROM client_tasks")
+    suspend fun deleteAllTasks()
+
+    @Query("SELECT * FROM client_tasks WHERE clientId = :clientId ORDER BY createdTimestamp DESC")
+    fun getTasksForClient(clientId: Long): Flow<List<TaskEntity>>
+
     @Query("DELETE FROM clients")
     suspend fun deleteAllClients()
 
@@ -144,7 +162,7 @@ interface ClientDao {
     suspend fun deleteRouteSheetItems(routeSheetId: Long)
 }
 
-@Database(entities = [ClientEntity::class, NameEntity::class, PhoneEntity::class, NoteEntity::class, CallLogEntity::class, UpdateLogSession::class, UpdateLogEntry::class, RouteSheetEntity::class, RouteSheetItemEntity::class], version = 14)
+@Database(entities = [ClientEntity::class, NameEntity::class, PhoneEntity::class, NoteEntity::class, TaskEntity::class, CallLogEntity::class, UpdateLogSession::class, UpdateLogEntry::class, RouteSheetEntity::class, RouteSheetItemEntity::class], version = 16)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun clientDao(): ClientDao
@@ -219,6 +237,41 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `client_tasks` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `clientId` INTEGER NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `commentText` TEXT NOT NULL,
+                        `photoUri` TEXT,
+                        `audioUri` TEXT,
+                        `createdTimestamp` INTEGER NOT NULL,
+                        `isCompleted` INTEGER NOT NULL
+                    )
+                """.trimIndent())
+            }
+        }
+
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS `client_tasks`")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `client_tasks` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `clientId` INTEGER NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `commentText` TEXT NOT NULL,
+                        `photoUri` TEXT,
+                        `audioUri` TEXT,
+                        `createdTimestamp` INTEGER NOT NULL,
+                        `isCompleted` INTEGER NOT NULL
+                    )
+                """.trimIndent())
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -226,7 +279,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "client_database"
                 )
-                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
+                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

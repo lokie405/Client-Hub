@@ -5,6 +5,8 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.Relation
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 
 @Entity(tableName = "clients")
 data class ClientEntity(
@@ -56,6 +58,54 @@ enum class NoteType {
     TEXT, CHECKLIST, AUDIO, PHOTO
 }
 
+@Entity(tableName = "client_tasks")
+data class TaskEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val clientId: Long,
+    val title: String,
+    val commentText: String = "",
+    val photoUri: String? = null,
+    val audioUri: String? = null,
+    val createdTimestamp: Long = System.currentTimeMillis(),
+    val isCompleted: Boolean = false
+)
+
+fun TaskEntity.getPhotoUris(): List<String> {
+    if (photoUri.isNullOrBlank()) return emptyList()
+    return if (photoUri.startsWith("[")) {
+        try {
+            Gson().fromJson(photoUri, object : TypeToken<List<String>>() {}.type) ?: emptyList()
+        } catch (_: Exception) {
+            listOf(photoUri)
+        }
+    } else if (photoUri.contains("|")) {
+        photoUri.split("|").filter { it.isNotBlank() }
+    } else {
+        listOf(photoUri)
+    }
+}
+
+fun TaskEntity.getAudioUris(): List<String> {
+    if (audioUri.isNullOrBlank()) return emptyList()
+    return if (audioUri.startsWith("[")) {
+        try {
+            Gson().fromJson(audioUri, object : TypeToken<List<String>>() {}.type) ?: emptyList()
+        } catch (_: Exception) {
+            listOf(audioUri)
+        }
+    } else if (audioUri.contains("|")) {
+        audioUri.split("|").filter { it.isNotBlank() }
+    } else {
+        listOf(audioUri)
+    }
+}
+
+fun encodeUrisList(uris: List<String>): String? {
+    val clean = uris.filter { it.isNotBlank() }
+    if (clean.isEmpty()) return null
+    return Gson().toJson(clean)
+}
+
 data class ClientWithDetails(
     @Embedded val client: ClientEntity,
     @Relation(
@@ -72,7 +122,12 @@ data class ClientWithDetails(
         parentColumn = "id",
         entityColumn = "clientId"
     )
-    val notes: List<NoteEntity>
+    val notes: List<NoteEntity>,
+    @Relation(
+        parentColumn = "id",
+        entityColumn = "clientId"
+    )
+    val tasks: List<TaskEntity> = emptyList()
 )
 
 @Entity(
