@@ -908,7 +908,7 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                 val jsonText = withContext(Dispatchers.IO) { getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() } }
                 if (jsonText != null) {
                     val jsonArray = com.google.gson.JsonParser.parseString(jsonText).asJsonArray
-                    clientDao.deleteAllClients(); clientDao.deleteAllNames(); clientDao.deleteAllPhones(); clientDao.deleteAllNotes()
+                    clientDao.deleteAllClients(); clientDao.deleteAllNames(); clientDao.deleteAllPhones(); clientDao.deleteAllNotes(); clientDao.deleteAllTasks()
                     var count = 0
                     jsonArray.forEach { element ->
                         val obj = element.asJsonObject; val clientObj = obj.getAsJsonObject("client")
@@ -921,6 +921,30 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                         else if (clientObj.has("firstName") || clientObj.has("lastName")) { val f = clientObj.get("firstName")?.asString ?: ""; val l = clientObj.get("lastName")?.asString ?: ""; clientDao.insertName(NameEntity(clientId = nid, fullName = "$l $f".trim())) }
                         obj.getAsJsonArray("phones")?.forEach { clientDao.insertPhone(PhoneEntity(clientId = nid, phoneNumber = it.asJsonObject.get("phoneNumber").asString)) }
                         obj.getAsJsonArray("notes")?.forEach { clientDao.insertNote(NoteEntity(clientId = nid, content = it.asJsonObject.get("content").asString)) }
+                        if (obj.has("tasks")) {
+                            obj.getAsJsonArray("tasks").forEach { taskElem ->
+                                val taskObj = taskElem.asJsonObject
+                                val taskTitle = taskObj.get("title")?.asString ?: ""
+                                if (taskTitle.isNotBlank()) {
+                                    val comment = taskObj.get("commentText")?.asString ?: ""
+                                    val pUri = taskObj.get("photoUri")?.asString
+                                    val aUri = taskObj.get("audioUri")?.asString
+                                    val ts = taskObj.get("createdTimestamp")?.asLong ?: System.currentTimeMillis()
+                                    val done = taskObj.get("isCompleted")?.asBoolean ?: false
+                                    clientDao.insertTask(
+                                        TaskEntity(
+                                            clientId = nid,
+                                            title = taskTitle,
+                                            commentText = comment,
+                                            photoUri = pUri,
+                                            audioUri = aUri,
+                                            createdTimestamp = ts,
+                                            isCompleted = done
+                                        )
+                                    )
+                                }
+                            }
+                        }
                     }
                     onComplete(count)
                 } else onComplete(-1)
