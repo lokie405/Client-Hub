@@ -726,7 +726,6 @@ fun RouteItemCard(
                             .size(44.dp)
                             .pointerInput(item.id, index, hasSelectionMode, isManualOrderingMode, isLocked) {
                                 detectTapGestures(
-                                    onDoubleTap = { if (!isLocked && !isManualOrderingMode) onDoubleTapNumber() },
                                     onLongPress = {
                                         if (!isManualOrderingMode) onLongPressNumber()
                                     },
@@ -1110,6 +1109,16 @@ fun RouteItemCard(
                         }
                     }
                 )
+                if (!isLocked && !isManualOrderingMode) {
+                    DropdownMenuItem(
+                        text = { Text("Поміняти місцями позиції") },
+                        leadingIcon = { Icon(Icons.Default.SwapVert, null) },
+                        onClick = {
+                            showContextMenu = false
+                            onDoubleTapNumber()
+                        }
+                    )
+                }
                 HorizontalDivider()
 
                 val targetSelectedItems = if (hasSelectionMode && isSelected) selectedItems else listOf(item)
