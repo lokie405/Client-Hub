@@ -7,6 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.location.Geocoder
 import android.net.Uri
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -55,7 +58,6 @@ import com.seryoga.myapplication.ui.extractUrlFromText
 import com.seryoga.myapplication.ui.isCoordinatesFieldFilled
 import com.seryoga.myapplication.ui.parseCoordinates
 import kotlinx.coroutines.launch
-import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -79,6 +81,7 @@ fun ClientDetailScreen(
     var latitude by remember { mutableStateOf<Double?>(null) }
     var longitude by remember { mutableStateOf<Double?>(null) }
     var label by remember { mutableStateOf("") }
+    var lastEditedTimestamp by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
     // Statuses
     var namesStatus by remember { mutableStateOf("changed") }
@@ -87,6 +90,7 @@ fun ClientDetailScreen(
     var addressStatus by remember { mutableStateOf("changed") }
     var phonesStatus by remember { mutableStateOf("changed") }
     var notesStatus by remember { mutableStateOf("changed") }
+    var labelStatus by remember { mutableStateOf("unchanged") }
     
     // Initial values to detect changes
     var initialNames by remember { mutableStateOf(listOf("")) }
@@ -103,6 +107,7 @@ fun ClientDetailScreen(
     var initialAddressStatus by remember { mutableStateOf("changed") }
     var initialPhonesStatus by remember { mutableStateOf("changed") }
     var initialNotesStatus by remember { mutableStateOf("changed") }
+    var initialLabelStatus by remember { mutableStateOf("unchanged") }
     
     val hasChanges by remember {
         derivedStateOf {
@@ -119,7 +124,8 @@ fun ClientDetailScreen(
             cityStatus != initialCityStatus ||
             addressStatus != initialAddressStatus ||
             phonesStatus != initialPhonesStatus ||
-            notesStatus != initialNotesStatus
+            notesStatus != initialNotesStatus ||
+            labelStatus != initialLabelStatus
         }
     }
     
@@ -143,7 +149,8 @@ fun ClientDetailScreen(
             cityStatus = cityStatus,
             addressStatus = addressStatus,
             phonesStatus = phonesStatus,
-            notesStatus = notesStatus
+            notesStatus = notesStatus,
+            labelStatus = labelStatus
         )
         onBack()
     }
@@ -274,12 +281,15 @@ fun ClientDetailScreen(
                 namesStatus = it.client.namesStatus; shopNameStatus = it.client.shopNameStatus
                 cityStatus = it.client.cityStatus; addressStatus = it.client.addressStatus
                 phonesStatus = it.client.phonesStatus; notesStatus = it.client.notesStatus
+                labelStatus = it.client.labelStatus
+                lastEditedTimestamp = it.client.lastEditedTimestamp
 
                 initialNames = names; initialShopName = shopName; initialCity = city
                 initialPhones = phones; initialNotes = notes; initialAddress = address; initialCoordinatesManual = coordinatesManual; initialLabel = label
                 initialNamesStatus = namesStatus; initialShopNameStatus = shopNameStatus
                 initialCityStatus = cityStatus; initialAddressStatus = addressStatus
                 initialPhonesStatus = phonesStatus; initialNotesStatus = notesStatus
+                initialLabelStatus = labelStatus
             }
         }
     }
@@ -301,6 +311,24 @@ fun ClientDetailScreen(
     ) { padding ->
         Column(modifier = Modifier.padding(padding).padding(16.dp).fillMaxSize().imePadding().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             
+            val lastEditedDateStr = remember(lastEditedTimestamp) {
+                SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(lastEditedTimestamp))
+            }
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Дата внесення/редагування:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(lastEditedDateStr, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+
             // Names section
             Column(modifier = Modifier.border(2.dp, if(namesStatus=="changed") Color(0xFF4CAF50) else Color(0xFFFF9800), RoundedCornerShape(4.dp)).padding(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -336,7 +364,7 @@ fun ClientDetailScreen(
             StatusTextField(value = shopName, onValue_Change = { shopName = it.replaceFirstChar { c -> c.uppercase() } }, label = "Назва магазину", status = shopNameStatus, onStatusChange = { shopNameStatus = it }, icon = Icons.Default.Storefront)
             StatusTextField(value = city, onValue_Change = { city = it.replaceFirstChar { c -> c.uppercase() } }, label = "Населений пункт", status = cityStatus, onStatusChange = { cityStatus = it }, icon = Icons.Default.LocationOn)
 
-            OutlinedTextField(value = label, onValueChange = { label = it.uppercase() }, label = { Text("Мітка") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.Label, null) }, modifier = Modifier.fillMaxWidth())
+            StatusTextField(value = label, onValue_Change = { label = it.uppercase() }, label = "Мітка", status = labelStatus, onStatusChange = { labelStatus = it }, icon = Icons.AutoMirrored.Filled.Label)
 
             StatusTextField(
                 value = address, onValue_Change = { address = it; addressStatus = "unchanged" }, label = "Адреса", status = addressStatus, onStatusChange = { addressStatus = it }, icon = Icons.Default.Map,

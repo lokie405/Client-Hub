@@ -315,8 +315,12 @@ fun ClientListScreen(
         }
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(top = padding.calculateTopPadding()).imePadding()) {
-            LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(displayedClients) { client ->
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                itemsIndexed(displayedClients, key = { _, client -> client.client.id }) { index, client ->
                     ClientCard(
                         clientWithDetails = client,
                         activeRouteSheet = activeRouteSheet,
@@ -326,6 +330,13 @@ fun ClientListScreen(
                         labelCounts = labelCounts,
                         searchQuery = searchQuery
                     )
+                    if (index < displayedClients.size - 1) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(top = 10.dp, start = 8.dp, end = 8.dp),
+                            thickness = 1.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        )
+                    }
                 }
             }
 
@@ -422,81 +433,175 @@ fun ClientCard(
 
     Card(
         modifier = Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = { showMenu = true }),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = when {
+                showMenu -> MaterialTheme.colorScheme.primary
+                isHighlighted -> MaterialTheme.colorScheme.tertiary
+                else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+            }
+        ),
         colors = CardDefaults.cardColors(containerColor = when { showMenu -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f); isHighlighted -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f); else -> MaterialTheme.colorScheme.surface })
     ) {
         Box {
-            Row(modifier = Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Surface(modifier = Modifier.size(50.dp), shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primaryContainer, tonalElevation = 4.dp) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.Default.Storefront, null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary) }
-                }
-                Spacer(modifier = Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    clientWithDetails.names.filter { it.fullName.isNotBlank() }.forEach { name -> HighlightedText(text = name.fullName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color.White) }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        HighlightedText(text = client.shopName, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                        if (hasNotes) {
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(Icons.AutoMirrored.Filled.Comment, "Примітка", tint = Color(0xFF2196F3), modifier = Modifier.size(14.dp))
+            Row(modifier = Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                // Ліва колонка: Населений пункт зверху, Мітка під ним
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.widthIn(min = 54.dp).padding(top = 2.dp)
+                ) {
+                    if (!client.city.isNullOrBlank()) {
+                        HighlightedText(
+                            text = client.city!!,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (isLabelFilled) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            shape = MaterialTheme.shapes.small
+                        ) {
+                            HighlightedText(
+                                text = client.label!!,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                maxLines = 1
+                            )
                         }
                     }
-                    if (isAddressFilled) Text(text = client.addressManual!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
                 }
-                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.Center) {
-                    if (!client.city.isNullOrBlank()) HighlightedText(text = client.city!!, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 4.dp, end = 8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        if (isLabelFilled) Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = MaterialTheme.shapes.small) { HighlightedText(text = client.label!!, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onTertiaryContainer) }
-                        IconButton(onClick = {
-                            val manualCoords = client.coordinatesManual?.trim()
-                            val extractedUrl = extractUrlFromText(manualCoords)
-                            if (extractedUrl != null) {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(extractedUrl)).apply { setPackage("com.google.android.apps.maps") }
-                                try {
-                                    context.startActivity(intent)
-                                } catch (_: Exception) {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(extractedUrl)))
-                                }
-                            } else {
-                                val parsedCoords = parseCoordinates(manualCoords)
-                                val effectiveLat = parsedCoords?.first ?: client.latitude
-                                val effectiveLng = parsedCoords?.second ?: client.longitude
 
-                                val pointQuery = when {
-                                    effectiveLat != null && effectiveLng != null -> "$effectiveLat,$effectiveLng"
-                                    !manualCoords.isNullOrBlank() -> manualCoords
-                                    else -> null
-                                }
+                Spacer(modifier = Modifier.width(10.dp))
 
-                                if (!pointQuery.isNullOrBlank()) {
-                                    val cleanShop = cleanTextForCopy(client.shopName)
-                                    val cleanFirstName = clientWithDetails.names.firstOrNull()?.fullName?.let { cleanTextForCopy(it) } ?: ""
-                                    val pinLabel = listOfNotNull(cleanShop.ifBlank { null }, cleanFirstName.ifBlank { null }).joinToString(", ") + if (!client.label.isNullOrBlank()) " (${client.label})" else ""
+                // Основна колонка справа від мітки
+                Column(modifier = Modifier.weight(1f)) {
+                    val hasActiveTasks = clientWithDetails.tasks.any { !it.isCompleted }
+                    val nameColor = if (hasActiveTasks) Color(0xFFF44336) else Color.White
 
-                                    val gmmUri = Uri.parse("geo:0,0?q=${Uri.encode(pointQuery)}(${Uri.encode(pinLabel)})&z=20")
-                                    val intent = Intent(Intent.ACTION_VIEW, gmmUri).apply { setPackage("com.google.android.apps.maps") }
-                                    try {
-                                        context.startActivity(intent)
-                                    } catch (_: Exception) {
-                                        val webUri = Uri.parse("https://www.google.com/maps/search/?api=1&query=${Uri.encode(pointQuery)}")
-                                        context.startActivity(Intent(Intent.ACTION_VIEW, webUri))
-                                    }
-                                } else {
-                                    Toast.makeText(context, "У клієнта не вказано координати!", Toast.LENGTH_SHORT).show()
+                    // Ім'я та прізвище — кожне в один рядок, розташовані вертикально (червоне при наявності активних завдань, біле якщо немає)
+                    clientWithDetails.names.filter { it.fullName.isNotBlank() }.forEach { name ->
+                        HighlightedText(
+                            text = name.fullName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = nameColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // Заголовна частина під останнім ім'ям: Магазин та Адреса зліва, Кнопки дій справа
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 4.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                HighlightedText(
+                                    text = client.shopName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (hasNotes) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(Icons.AutoMirrored.Filled.Comment, "Примітка", tint = Color(0xFF2196F3), modifier = Modifier.size(14.dp))
                                 }
                             }
-                        }) {
-                            val pinIconTint = if (isCoordinatesFieldFilled(client.coordinatesManual)) Color(0xFF4CAF50) else Color(0xFFF44336)
-                            Icon(Icons.Default.Place, "Показати на карті", tint = pinIconTint, modifier = Modifier.size(20.dp))
+                            if (isAddressFilled) {
+                                Text(
+                                    text = client.addressManual!!,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-                        IconButton(onClick = onCallClick) { Icon(Icons.Default.Phone, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp)) }
-                    }
-                    Spacer(modifier = Modifier.height(2.dp))
-                    val taskTint = getTaskIconTint(clientWithDetails.tasks)
-                    IconButton(
-                        onClick = onTasksClick,
-                        modifier = Modifier.size(34.dp)
-                    ) {
-                        Icon(Icons.Default.Checklist, "Завдання", tint = taskTint, modifier = Modifier.size(20.dp))
+
+                        // Кнопки дій: "Шпилька", "Завдання", "Подзвонити"
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(0.dp)
+                        ) {
+                            // "Шпилька" (Карта)
+                            IconButton(
+                                onClick = {
+                                    val manualCoords = client.coordinatesManual?.trim()
+                                    val extractedUrl = extractUrlFromText(manualCoords)
+                                    if (extractedUrl != null) {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(extractedUrl)).apply { setPackage("com.google.android.apps.maps") }
+                                        try {
+                                            context.startActivity(intent)
+                                        } catch (_: Exception) {
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(extractedUrl)))
+                                        }
+                                    } else {
+                                        val parsedCoords = parseCoordinates(manualCoords)
+                                        val effectiveLat = parsedCoords?.first ?: client.latitude
+                                        val effectiveLng = parsedCoords?.second ?: client.longitude
+
+                                        val pointQuery = when {
+                                            effectiveLat != null && effectiveLng != null -> "$effectiveLat,$effectiveLng"
+                                            !manualCoords.isNullOrBlank() -> manualCoords
+                                            else -> null
+                                        }
+
+                                        if (!pointQuery.isNullOrBlank()) {
+                                            val cleanShop = cleanTextForCopy(client.shopName)
+                                            val cleanFirstName = clientWithDetails.names.firstOrNull()?.fullName?.let { cleanTextForCopy(it) } ?: ""
+                                            val pinLabel = listOfNotNull(cleanShop.ifBlank { null }, cleanFirstName.ifBlank { null }).joinToString(", ") + if (!client.label.isNullOrBlank()) " (${client.label})" else ""
+
+                                            val gmmUri = Uri.parse("geo:0,0?q=${Uri.encode(pointQuery)}(${Uri.encode(pinLabel)})&z=20")
+                                            val intent = Intent(Intent.ACTION_VIEW, gmmUri).apply { setPackage("com.google.android.apps.maps") }
+                                            try {
+                                                context.startActivity(intent)
+                                            } catch (_: Exception) {
+                                                val webUri = Uri.parse("https://www.google.com/maps/search/?api=1&query=${Uri.encode(pointQuery)}")
+                                                context.startActivity(Intent(Intent.ACTION_VIEW, webUri))
+                                            }
+                                        } else {
+                                            Toast.makeText(context, "У клієнта не вказано координати!", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                val pinIconTint = if (isCoordinatesFieldFilled(client.coordinatesManual)) Color(0xFF4CAF50) else Color(0xFFF44336)
+                                Icon(Icons.Default.Place, "Показати на карті", tint = pinIconTint, modifier = Modifier.size(20.dp))
+                            }
+
+                            // "Завдання"
+                            val taskTint = getTaskIconTint(clientWithDetails.tasks)
+                            IconButton(
+                                onClick = onTasksClick,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(Icons.Default.Checklist, "Завдання", tint = taskTint, modifier = Modifier.size(20.dp))
+                            }
+
+                            // "Подзвонити"
+                            IconButton(
+                                onClick = onCallClick,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(Icons.Default.Phone, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            }
+                        }
                     }
                 }
             }

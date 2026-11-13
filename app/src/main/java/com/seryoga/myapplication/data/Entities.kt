@@ -26,7 +26,9 @@ data class ClientEntity(
     val cityStatus: String = "changed",
     val addressStatus: String = "changed",
     val phonesStatus: String = "changed",
-    val notesStatus: String = "changed"
+    val notesStatus: String = "changed",
+    val labelStatus: String = "unchanged",
+    val lastEditedTimestamp: Long = System.currentTimeMillis()
 )
 
 @Entity(tableName = "client_names")

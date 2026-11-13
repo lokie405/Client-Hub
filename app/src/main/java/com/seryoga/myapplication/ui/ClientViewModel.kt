@@ -160,6 +160,10 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery
 
+    val allClients: StateFlow<List<ClientWithDetails>> = clientDao.getAllClients()
+        .catch { e -> Log.e("ClientViewModel", "Error in allClients flow", e); emit(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
     val clients: StateFlow<List<ClientWithDetails>> = _searchQuery
         .flatMapLatest { query ->
             clientDao.getAllClients().map { list ->
@@ -414,7 +418,8 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
         cityStatus: String = "changed",
         addressStatus: String = "changed",
         phonesStatus: String = "changed",
-        notesStatus: String = "changed"
+        notesStatus: String = "changed",
+        labelStatus: String = "unchanged"
     ) {
         viewModelScope.launch {
             val clientId = clientDao.insertClient(
@@ -432,7 +437,9 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                     cityStatus = cityStatus,
                     addressStatus = addressStatus,
                     phonesStatus = phonesStatus,
-                    notesStatus = notesStatus
+                    notesStatus = notesStatus,
+                    labelStatus = labelStatus,
+                    lastEditedTimestamp = System.currentTimeMillis()
                 )
             )
             clientDao.deleteNamesForClient(clientId)
@@ -621,7 +628,7 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
 
                     Log.d("ExcelHeaders", "Знайдені індекси: Вага (Брутто)=$wtI, Сума=$sumI, №Заявки=$ordI, ТРТ=$shI, Клієнт=$clI, Місто=$ciI")
 
-                    val anyIdRegex = Regex("""([A-ZА-ЯІЇЄҐ]\d{1,3})|(\d{1,3}[A-ZА-ЯІЇЄҐ])""")
+                    val anyIdRegex = Regex("""(?:\b[1-9]\d{0,2}\s*[A-ZА-ЯІЇЄҐ]\b)|(?:\b[A-ZА-ЯІЇЄҐ]\s*[1-9]\d{0,2}\b)""")
                     val added = mutableListOf<String>(); val currentLogs = mutableListOf<UpdateLogEntry>()
                     val importedRouteClients = mutableListOf<ImportedRouteClient>()
                     val allClients = clientDao.getAllClients().first()
@@ -708,14 +715,15 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                         val existing: ClientWithDetails?
 
                         if (m != null) {
-                            label = normalizeCyrillicLookalikes(m.value.trim().uppercase())
-                            en = nc.replace(m.value, "").trim().trim(',', '.', ';', ' ', ':', '-', '—')
+                            val rawMatched = m.value
+                            label = normalizeCyrillicLookalikes(rawMatched.replace(Regex("""\s+"""), "").uppercase())
+                            en = nc.replace(rawMatched, "").trim().trim(',', '.', ';', ' ', ':', '-', '—')
                             // Шукаємо клієнта СУВОРО за міткою з примітки
                             existing = findExistingClientByLabel(label)
                             if (existing != null) {
-                                Log.d("way", "[Рядок $i] МІТКА: Знайдено в примітці -> '$label'. Клієнта з міткою '$label' ЗНАЙДЕНО в БД (ID=${existing.client.id}).")
+                                Log.d("way", "[Рядок $i] МІТКА: Розпізнано з примітки -> '$label' (із тексту '${m.value}'). Клієнта з міткою '$label' ЗНАЙДЕНО в БД (ID=${existing.client.id}).")
                             } else {
-                                Log.d("way", "[Рядок $i] МІТКА: Знайдено в примітці -> '$label'. Мітка НОВА, клієнта з міткою '$label' немає в БД.")
+                                Log.d("way", "[Рядок $i] МІТКА: Розпізнано з примітки -> '$label' (із тексту '${m.value}'). Мітка НОВА, клієнта з міткою '$label' немає в БД.")
                             }
                         } else {
                             en = nc.trim().trim(',', '.', ';', ' ', ':', '-', '—')
@@ -736,7 +744,7 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                         if (existing == null) {
                             Log.d("way", "[Рядок $i] РІШЕННЯ: ДОДАТИ НОВОГО КЛІЄНТА (Збігів у БД не знайдено)")
                             val cleanNameForNew = cleanTextForCopy(name).ifBlank { name }
-                            val nid = clientDao.insertClient(ClientEntity(shopName = shop, city = city.ifBlank { null }, addressManual = addr.ifBlank { null }, addressStatus = "unchanged", label = label))
+                            val nid = clientDao.insertClient(ClientEntity(shopName = shop, city = city.ifBlank { null }, addressManual = addr.ifBlank { null }, addressStatus = "unchanged", label = label, labelStatus = "unchanged", lastEditedTimestamp = System.currentTimeMillis()))
                             clientDao.insertName(NameEntity(clientId = nid, fullName = cleanNameForNew)); phones.forEach { p -> clientDao.insertPhone(PhoneEntity(clientId = nid, phoneNumber = p)) }
                             if (en.isNotBlank()) clientDao.insertNote(NoteEntity(clientId = nid, content = en))
                             added.add("[$label] $shop")
@@ -853,6 +861,7 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                             }
 
                             if (changed) {
+                                cur = cur.copy(lastEditedTimestamp = System.currentTimeMillis())
                                 clientDao.insertClient(cur)
                                 clientDao.getClientById(cur.id)?.let { updatedDetail ->
                                     val idx = currentDbClients.indexOfFirst { it.client.id == cur.id }
@@ -914,7 +923,9 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                         val obj = element.asJsonObject; val clientObj = obj.getAsJsonObject("client")
                         val nStatus = clientObj.get("namesStatus")?.asString ?: clientObj.get("fullNameStatus")?.asString ?: "changed"
                         val coordsManual = clientObj.get("coordinatesManual")?.asString
-                        val nid = clientDao.insertClient(ClientEntity(id = 0, middleName = clientObj.get("middleName")?.asString ?: "", shopName = clientObj.get("shopName")?.asString ?: "", city = clientObj.get("city")?.asString, addressManual = clientObj.get("addressManual")?.asString, coordinatesManual = coordsManual, latitude = clientObj.get("latitude")?.asDouble, longitude = clientObj.get("longitude")?.asDouble, label = clientObj.get("label")?.asString, namesStatus = nStatus, shopNameStatus = clientObj.get("shopNameStatus")?.asString ?: "changed", cityStatus = clientObj.get("cityStatus")?.asString ?: "changed", addressStatus = clientObj.get("addressStatus")?.asString ?: "changed", phonesStatus = clientObj.get("phonesStatus")?.asString ?: "changed", notesStatus = clientObj.get("notesStatus")?.asString ?: "changed"))
+                        val lStatus = clientObj.get("labelStatus")?.asString ?: "unchanged"
+                        val lastEditedTs = clientObj.get("lastEditedTimestamp")?.asLong ?: System.currentTimeMillis()
+                        val nid = clientDao.insertClient(ClientEntity(id = 0, middleName = clientObj.get("middleName")?.asString ?: "", shopName = clientObj.get("shopName")?.asString ?: "", city = clientObj.get("city")?.asString, addressManual = clientObj.get("addressManual")?.asString, coordinatesManual = coordsManual, latitude = clientObj.get("latitude")?.asDouble, longitude = clientObj.get("longitude")?.asDouble, label = clientObj.get("label")?.asString, namesStatus = nStatus, shopNameStatus = clientObj.get("shopNameStatus")?.asString ?: "changed", cityStatus = clientObj.get("cityStatus")?.asString ?: "changed", addressStatus = clientObj.get("addressStatus")?.asString ?: "changed", phonesStatus = clientObj.get("phonesStatus")?.asString ?: "changed", notesStatus = clientObj.get("notesStatus")?.asString ?: "changed", labelStatus = lStatus, lastEditedTimestamp = lastEditedTs))
                         count++
                         if (obj.has("names")) obj.getAsJsonArray("names").forEach { clientDao.insertName(NameEntity(clientId = nid, fullName = it.asJsonObject.get("fullName").asString)) }
                         else if (clientObj.has("fullName")) clientDao.insertName(NameEntity(clientId = nid, fullName = clientObj.get("fullName").asString))

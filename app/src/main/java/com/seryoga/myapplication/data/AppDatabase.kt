@@ -162,7 +162,7 @@ interface ClientDao {
     suspend fun deleteRouteSheetItems(routeSheetId: Long)
 }
 
-@Database(entities = [ClientEntity::class, NameEntity::class, PhoneEntity::class, NoteEntity::class, TaskEntity::class, CallLogEntity::class, UpdateLogSession::class, UpdateLogEntry::class, RouteSheetEntity::class, RouteSheetItemEntity::class], version = 16)
+@Database(entities = [ClientEntity::class, NameEntity::class, PhoneEntity::class, NoteEntity::class, TaskEntity::class, CallLogEntity::class, UpdateLogSession::class, UpdateLogEntry::class, RouteSheetEntity::class, RouteSheetItemEntity::class], version = 17)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun clientDao(): ClientDao
@@ -272,6 +272,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE clients ADD COLUMN labelStatus TEXT NOT NULL DEFAULT 'unchanged'")
+                db.execSQL("ALTER TABLE clients ADD COLUMN lastEditedTimestamp INTEGER NOT NULL DEFAULT ${System.currentTimeMillis()}")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -279,7 +286,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "client_database"
                 )
-                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
+                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

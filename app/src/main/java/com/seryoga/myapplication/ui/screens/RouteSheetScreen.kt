@@ -124,7 +124,7 @@ fun RouteSheetScreen(
     onOpenClientDetail: (clientId: Long) -> Unit = {}
 ) {
     val activeRouteSheet by viewModel.activeRouteSheet.collectAsState()
-    val allClients by viewModel.clients.collectAsState()
+    val allClients by viewModel.allClients.collectAsState()
     var selectedItemForNote by remember { mutableStateOf<RouteSheetItemEntity?>(null) }
     var selectedItemIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var swapItemData by remember { mutableStateOf<Pair<RouteSheetItemEntity, Int>?>(null) }
@@ -633,6 +633,8 @@ fun RouteItemCard(
 
     val maxSlidePx = if (minSwipeThresholdPx > 0f) minSwipeThresholdPx * 1.25f else 400f
 
+    val targetClientId = clientWithDetails?.client?.id ?: (if (item.clientId != 0L) item.clientId else null)
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -649,7 +651,7 @@ fun RouteItemCard(
                     } else if (hasSelectionMode) {
                         onToggleSelect()
                     } else {
-                        showContextMenu = true
+                        // Поодиноке натискання нічого не робить за вимогою користувача
                     }
                 },
                 onLongClick = {
@@ -868,14 +870,18 @@ fun RouteItemCard(
 
                 Spacer(modifier = Modifier.height(2.dp))
 
-                // Middle Row: Client Names ("Клієнт") - Each name rendered on its own line below the previous name in Color.White
+                // Middle Row: Client Names ("Клієнт") - Червоний колір якщо є невиконане (активне) завдання, Білий якщо немає
+                val clientTasks = clientWithDetails?.tasks ?: emptyList()
+                val hasActiveTasks = clientTasks.any { !it.isCompleted }
+                val nameColor = if (hasActiveTasks) Color(0xFFF44336) else Color.White
+
                 if (!liveNames.isNullOrEmpty()) {
                     liveNames.filter { it.fullName.isNotBlank() }.forEach { n ->
                         Text(
                             text = n.fullName,
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Bold,
-                            color = Color.White
+                            color = nameColor
                         )
                     }
                 } else if (item.clientNameSnapshot.isNotBlank()) {
@@ -883,7 +889,7 @@ fun RouteItemCard(
                         text = item.clientNameSnapshot,
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        color = nameColor
                     )
                 }
 
@@ -971,8 +977,8 @@ fun RouteItemCard(
 
                         IconButton(
                             onClick = {
-                                if (item.clientId != 0L) {
-                                    onTasksClick(item.clientId)
+                                if (targetClientId != null) {
+                                    onTasksClick(targetClientId)
                                 }
                             },
                             modifier = Modifier.size(34.dp)
@@ -989,7 +995,7 @@ fun RouteItemCard(
                         IconButton(
                             onClick = {
                                 scope.launch {
-                                    val geo = if (item.clientId != 0L) onGetClientGeoDetails(item.clientId) else null
+                                    val geo = if (targetClientId != null) onGetClientGeoDetails(targetClientId) else null
                                     val shop = cleanTextForCopy(item.clientShopSnapshot)
                                     val cleanFirstName = cleanTextForCopy(item.clientNameSnapshot)
                                     val pinLabel = listOfNotNull(shop.ifBlank { null }, cleanFirstName.ifBlank { null }).joinToString(", ") + if (item.clientLabelSnapshot.isNotBlank()) " (${item.clientLabelSnapshot})" else ""
@@ -1039,8 +1045,8 @@ fun RouteItemCard(
                         // Call button
                         IconButton(
                             onClick = {
-                                if (item.clientId != 0L) {
-                                    onCallClient(item.clientId)
+                                if (targetClientId != null) {
+                                    onCallClient(targetClientId)
                                 }
                             },
                             modifier = Modifier.size(34.dp)
@@ -1097,8 +1103,10 @@ fun RouteItemCard(
                     leadingIcon = { Icon(Icons.Default.Edit, null) },
                     onClick = {
                         showContextMenu = false
-                        if (item.clientId != 0L) {
-                            onOpenClientDetail(item.clientId)
+                        if (targetClientId != null) {
+                            onOpenClientDetail(targetClientId)
+                        } else {
+                            android.widget.Toast.makeText(context, "Клієнта не знайдено в базі", android.widget.Toast.LENGTH_SHORT).show()
                         }
                     }
                 )
