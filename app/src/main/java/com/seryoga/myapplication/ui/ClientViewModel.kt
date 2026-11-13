@@ -494,19 +494,23 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
 
     fun addNote(clientId: Long, content: String) { viewModelScope.launch { clientDao.insertNote(NoteEntity(clientId = clientId, content = content)) } }
 
-    fun addTask(clientId: Long, title: String, commentText: String = "", photoUri: String? = null, audioUri: String? = null) {
+    fun addTask(clientId: Long, title: String, commentText: String = "", photoUri: String? = null, audioUri: String? = null, reminderTimestamp: Long? = null) {
         viewModelScope.launch {
-            clientDao.insertTask(
-                TaskEntity(
-                    clientId = clientId,
-                    title = title,
-                    commentText = commentText,
-                    photoUri = photoUri,
-                    audioUri = audioUri,
-                    createdTimestamp = System.currentTimeMillis(),
-                    isCompleted = false
-                )
+            val task = TaskEntity(
+                clientId = clientId,
+                title = title,
+                commentText = commentText,
+                photoUri = photoUri,
+                audioUri = audioUri,
+                createdTimestamp = System.currentTimeMillis(),
+                isCompleted = false,
+                reminderTimestamp = reminderTimestamp
             )
+            val newTaskId = clientDao.insertTask(task)
+            val insertedTask = task.copy(id = newTaskId)
+            val client = clientDao.getClientById(clientId)
+            val clientName = client?.client?.shopName ?: ""
+            com.seryoga.myapplication.data.TaskReminderReceiver.scheduleReminder(getApplication(), insertedTask, clientName)
             autoExportData()
         }
     }
@@ -514,19 +518,35 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
     fun updateTask(task: TaskEntity) {
         viewModelScope.launch {
             clientDao.updateTask(task)
+            val client = clientDao.getClientById(task.clientId)
+            val clientName = client?.client?.shopName ?: ""
+            if (task.isCompleted || task.reminderTimestamp == null) {
+                com.seryoga.myapplication.data.TaskReminderReceiver.cancelReminder(getApplication(), task.id)
+            } else {
+                com.seryoga.myapplication.data.TaskReminderReceiver.scheduleReminder(getApplication(), task, clientName)
+            }
             autoExportData()
         }
     }
 
     fun toggleTaskCompleted(task: TaskEntity) {
         viewModelScope.launch {
-            clientDao.updateTask(task.copy(isCompleted = !task.isCompleted))
+            val updated = task.copy(isCompleted = !task.isCompleted)
+            clientDao.updateTask(updated)
+            val client = clientDao.getClientById(task.clientId)
+            val clientName = client?.client?.shopName ?: ""
+            if (updated.isCompleted) {
+                com.seryoga.myapplication.data.TaskReminderReceiver.cancelReminder(getApplication(), task.id)
+            } else if (updated.reminderTimestamp != null) {
+                com.seryoga.myapplication.data.TaskReminderReceiver.scheduleReminder(getApplication(), updated, clientName)
+            }
             autoExportData()
         }
     }
 
     fun deleteTask(task: TaskEntity) {
         viewModelScope.launch {
+            com.seryoga.myapplication.data.TaskReminderReceiver.cancelReminder(getApplication(), task.id)
             clientDao.deleteTask(task)
             autoExportData()
         }
@@ -942,17 +962,22 @@ class ClientViewModel(application: Application) : AndroidViewModel(application) 
                                     val aUri = taskObj.get("audioUri")?.asString
                                     val ts = taskObj.get("createdTimestamp")?.asLong ?: System.currentTimeMillis()
                                     val done = taskObj.get("isCompleted")?.asBoolean ?: false
-                                    clientDao.insertTask(
-                                        TaskEntity(
-                                            clientId = nid,
-                                            title = taskTitle,
-                                            commentText = comment,
-                                            photoUri = pUri,
-                                            audioUri = aUri,
-                                            createdTimestamp = ts,
-                                            isCompleted = done
-                                        )
+                                    val remTs = taskObj.get("reminderTimestamp")?.let { if (it.isJsonNull) null else it.asLong }
+                                    val taskEntity = TaskEntity(
+                                        clientId = nid,
+                                        title = taskTitle,
+                                        commentText = comment,
+                                        photoUri = pUri,
+                                        audioUri = aUri,
+                                        createdTimestamp = ts,
+                                        isCompleted = done,
+                                        reminderTimestamp = remTs
                                     )
+                                    val newTid = clientDao.insertTask(taskEntity)
+                                    if (remTs != null && !done && remTs > System.currentTimeMillis()) {
+                                        val shop = clientObj.get("shopName")?.asString ?: ""
+                                        com.seryoga.myapplication.data.TaskReminderReceiver.scheduleReminder(getApplication(), taskEntity.copy(id = newTid), shop)
+                                    }
                                 }
                             }
                         }

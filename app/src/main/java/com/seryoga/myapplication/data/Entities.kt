@@ -69,7 +69,8 @@ data class TaskEntity(
     val photoUri: String? = null,
     val audioUri: String? = null,
     val createdTimestamp: Long = System.currentTimeMillis(),
-    val isCompleted: Boolean = false
+    val isCompleted: Boolean = false,
+    val reminderTimestamp: Long? = null
 )
 
 fun TaskEntity.getPhotoUris(): List<String> {

@@ -845,6 +845,7 @@ fun ClientTasksDialog(
     var customText by remember { mutableStateOf("") }
     var photoUris by remember { mutableStateOf<List<String>>(emptyList()) }
     var audioUris by remember { mutableStateOf<List<String>>(emptyList()) }
+    var reminderTimestamp by remember { mutableStateOf<Long?>(null) }
 
     // Editing section state
     var taskToEdit by remember { mutableStateOf<TaskEntity?>(null) }
@@ -853,6 +854,7 @@ fun ClientTasksDialog(
     var editCustomText by remember { mutableStateOf("") }
     var editPhotoUris by remember { mutableStateOf<List<String>>(emptyList()) }
     var editAudioUris by remember { mutableStateOf<List<String>>(emptyList()) }
+    var editReminderTimestamp by remember { mutableStateOf<Long?>(null) }
 
     // Media targets & dialogs
     var targetMediaTarget by remember { mutableStateOf(MediaTarget.CREATE) }
@@ -1063,6 +1065,38 @@ fun ClientTasksDialog(
         )
     }
 
+    fun showDateTimePicker(initialTs: Long?, onSelected: (Long) -> Unit) {
+        val cal = Calendar.getInstance()
+        if (initialTs != null && initialTs > System.currentTimeMillis()) {
+            cal.timeInMillis = initialTs
+        }
+        android.app.DatePickerDialog(
+            context,
+            { _, year, month, dayOfMonth ->
+                cal.set(Calendar.YEAR, year)
+                cal.set(Calendar.MONTH, month)
+                cal.set(Calendar.DAY_OF_MONTH, dayOfMonth)
+
+                android.app.TimePickerDialog(
+                    context,
+                    { _, hourOfDay, minute ->
+                        cal.set(Calendar.HOUR_OF_DAY, hourOfDay)
+                        cal.set(Calendar.MINUTE, minute)
+                        cal.set(Calendar.SECOND, 0)
+                        cal.set(Calendar.MILLISECOND, 0)
+                        onSelected(cal.timeInMillis)
+                    },
+                    cal.get(Calendar.HOUR_OF_DAY),
+                    cal.get(Calendar.MINUTE),
+                    true
+                ).show()
+            },
+            cal.get(Calendar.YEAR),
+            cal.get(Calendar.MONTH),
+            cal.get(Calendar.DAY_OF_MONTH)
+        ).show()
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -1070,7 +1104,7 @@ fun ClientTasksDialog(
         Surface(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp),
+                .padding(12.dp),
             shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 6.dp
@@ -1078,6 +1112,8 @@ fun ClientTasksDialog(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .imePadding()
+                    .verticalScroll(rememberScrollState())
                     .padding(16.dp)
             ) {
                 Row(
@@ -1122,12 +1158,61 @@ fun ClientTasksDialog(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
+                            // Заголовок форми з кнопками скасування та створення зверху
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Нове завдання",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    TextButton(onClick = {
+                                        showCreateSection = false
+                                        customTitleInput = ""
+                                        customText = ""
+                                        photoUris = emptyList()
+                                        audioUris = emptyList()
+                                        reminderTimestamp = null
+                                    }) {
+                                        Text("Скасувати")
+                                    }
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Button(onClick = {
+                                        val finalTitle = if (selectedPresetTitle == "Інше") customTitleInput.ifBlank { "Інше" } else selectedPresetTitle
+                                        viewModel.addTask(
+                                            clientId = clientId,
+                                            title = finalTitle,
+                                            commentText = customText.trim(),
+                                            photoUri = encodeUrisList(photoUris),
+                                            audioUri = encodeUrisList(audioUris),
+                                            reminderTimestamp = reminderTimestamp
+                                        )
+                                        showCreateSection = false
+                                        customTitleInput = ""
+                                        customText = ""
+                                        photoUris = emptyList()
+                                        audioUris = emptyList()
+                                        reminderTimestamp = null
+                                    }) {
+                                        Icon(Icons.Default.Save, null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Створити")
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
                             Text(
                                 text = "Виберіть тип завдання:",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold
                             )
-                            Spacer(modifier = Modifier.height(6.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
 
                             presetTitles.forEach { preset ->
                                 Row(
@@ -1170,6 +1255,39 @@ fun ClientTasksDialog(
                                 modifier = Modifier.fillMaxWidth(),
                                 maxLines = 3
                             )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Нагадування
+                            Text("Нагадування:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        showDateTimePicker(reminderTimestamp) { selectedTs ->
+                                            reminderTimestamp = selectedTs
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.NotificationsActive, null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    val textStr = if (reminderTimestamp != null) {
+                                        "🔔 " + SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(reminderTimestamp!!))
+                                    } else {
+                                        "Встановити нагадування"
+                                    }
+                                    Text(textStr, style = MaterialTheme.typography.labelMedium)
+                                }
+                                if (reminderTimestamp != null) {
+                                    IconButton(onClick = { reminderTimestamp = null }) {
+                                        Icon(Icons.Default.Clear, "Видалити нагадування", tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
 
                             Spacer(modifier = Modifier.height(8.dp))
 
@@ -1367,6 +1485,7 @@ fun ClientTasksDialog(
                                             editCustomText = task.commentText
                                             editPhotoUris = task.getPhotoUris()
                                             editAudioUris = task.getAudioUris()
+                                            editReminderTimestamp = task.reminderTimestamp
                                         }
                                     ),
                                 border = BorderStroke(
@@ -1404,6 +1523,17 @@ fun ClientTasksDialog(
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = MaterialTheme.colorScheme.outline
                                                 )
+                                                if (task.reminderTimestamp != null) {
+                                                    val reminderDateStr = remember(task.reminderTimestamp) {
+                                                        SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(task.reminderTimestamp))
+                                                    }
+                                                    Text(
+                                                        text = "🔔 Нагадування: $reminderDateStr",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = Color(0xFFFF9800)
+                                                    )
+                                                }
                                             }
                                         }
 
@@ -1415,6 +1545,7 @@ fun ClientTasksDialog(
                                                 editCustomText = task.commentText
                                                 editPhotoUris = task.getPhotoUris()
                                                 editAudioUris = task.getAudioUris()
+                                                editReminderTimestamp = task.reminderTimestamp
                                             }) {
                                                 Icon(
                                                     imageVector = Icons.Default.Edit,
@@ -1542,8 +1673,28 @@ fun ClientTasksDialog(
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
-                        IconButton(onClick = { taskToEdit = null }) {
-                            Icon(Icons.Default.Close, "Закрити")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { taskToEdit = null }) {
+                                Text("Скасувати")
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Button(onClick = {
+                                val finalTitle = if (editPresetTitle == "Інше") editCustomTitleInput.ifBlank { "Інше" } else editPresetTitle
+                                viewModel.updateTask(
+                                    taskToEdit!!.copy(
+                                        title = finalTitle,
+                                        commentText = editCustomText.trim(),
+                                        photoUri = encodeUrisList(editPhotoUris),
+                                        audioUri = encodeUrisList(editAudioUris),
+                                        reminderTimestamp = editReminderTimestamp
+                                    )
+                                )
+                                taskToEdit = null
+                            }) {
+                                Icon(Icons.Default.Save, null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Зберегти")
+                            }
                         }
                     }
 
@@ -1591,6 +1742,39 @@ fun ClientTasksDialog(
                         modifier = Modifier.fillMaxWidth(),
                         maxLines = 3
                     )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Нагадування (Редагування)
+                    Text("Нагадування:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                showDateTimePicker(editReminderTimestamp) { selectedTs ->
+                                    editReminderTimestamp = selectedTs
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.NotificationsActive, null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            val textStr = if (editReminderTimestamp != null) {
+                                "🔔 " + SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(editReminderTimestamp!!))
+                            } else {
+                                "Встановити нагадування"
+                            }
+                            Text(textStr, style = MaterialTheme.typography.labelMedium)
+                        }
+                        if (editReminderTimestamp != null) {
+                            IconButton(onClick = { editReminderTimestamp = null }) {
+                                Icon(Icons.Default.Clear, "Видалити нагадування", tint = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -1717,32 +1901,6 @@ fun ClientTasksDialog(
                             color = if (isRecordingAudio && recordingTarget == MediaTarget.EDIT) Color.Red else MaterialTheme.colorScheme.primary,
                             style = MaterialTheme.typography.labelMedium
                         )
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        TextButton(onClick = { taskToEdit = null }) {
-                            Text("Скасувати")
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(onClick = {
-                            val finalTitle = if (editPresetTitle == "Інше") editCustomTitleInput.ifBlank { "Інше" } else editPresetTitle
-                            viewModel.updateTask(
-                                taskToEdit!!.copy(
-                                    title = finalTitle,
-                                    commentText = editCustomText.trim(),
-                                    photoUri = encodeUrisList(editPhotoUris),
-                                    audioUri = encodeUrisList(editAudioUris)
-                                )
-                            )
-                            taskToEdit = null
-                        }) {
-                            Text("Зберегти")
-                        }
                     }
                 }
             }
