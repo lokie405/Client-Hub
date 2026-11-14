@@ -465,6 +465,8 @@ fun ClientDetailScreen(
                 }
                 TextButton(onClick = { notes = notes + "" }) { Text("Додати ще одну примітку") }
             }
+
+            Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.ime))
         }
     }
 }

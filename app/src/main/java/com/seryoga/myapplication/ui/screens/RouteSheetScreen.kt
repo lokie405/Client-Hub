@@ -54,6 +54,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.seryoga.myapplication.data.ClientWithDetails
 import com.seryoga.myapplication.data.RouteSheetItemEntity
@@ -1396,7 +1397,10 @@ fun RouteItemNoteDialog(
         }
     }
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+    ) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1406,6 +1410,7 @@ fun RouteItemNoteDialog(
             Column(
                 modifier = Modifier
                     .padding(16.dp)
+                    .imePadding()
                     .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -1566,6 +1571,8 @@ fun RouteItemNoteDialog(
                         Text("Зберегти")
                     }
                 }
+
+                Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.ime))
             }
         }
     }

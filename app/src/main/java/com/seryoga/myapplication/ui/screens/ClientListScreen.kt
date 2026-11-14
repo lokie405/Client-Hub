@@ -1099,7 +1099,7 @@ fun ClientTasksDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
         Surface(
             modifier = Modifier
@@ -1640,6 +1640,7 @@ fun ClientTasksDialog(
                         }
                     }
                 }
+                Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.ime))
             }
         }
     }
@@ -1648,7 +1649,7 @@ fun ClientTasksDialog(
     if (taskToEdit != null) {
         Dialog(
             onDismissRequest = { taskToEdit = null },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
         ) {
             Surface(
                 modifier = Modifier
@@ -1902,6 +1903,8 @@ fun ClientTasksDialog(
                             style = MaterialTheme.typography.labelMedium
                         )
                     }
+
+                    Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.ime))
                 }
             }
         }
