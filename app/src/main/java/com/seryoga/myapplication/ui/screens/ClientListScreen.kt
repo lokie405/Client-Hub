@@ -30,6 +30,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -874,6 +876,7 @@ fun ClientTasksDialog(
         "Залишили накладні на пропечатку",
         "Довезти товар",
         "Пропечатати накладні",
+        "Забрати борг",
         "Інше"
     )
 
@@ -1239,8 +1242,9 @@ fun ClientTasksDialog(
                                 Spacer(modifier = Modifier.height(6.dp))
                                 OutlinedTextField(
                                     value = customTitleInput,
-                                    onValueChange = { customTitleInput = it },
+                                    onValueChange = { customTitleInput = it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase(Locale.getDefault()) else c.toString() } },
                                     label = { Text("Вкажіть назву завдання") },
+                                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
                                 )
@@ -1250,8 +1254,9 @@ fun ClientTasksDialog(
 
                             OutlinedTextField(
                                 value = customText,
-                                onValueChange = { customText = it },
+                                onValueChange = { customText = it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase(Locale.getDefault()) else c.toString() } },
                                 label = { Text("Коментар / Додатковий текст") },
+                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                                 modifier = Modifier.fillMaxWidth(),
                                 maxLines = 3
                             )
@@ -1727,8 +1732,9 @@ fun ClientTasksDialog(
                         Spacer(modifier = Modifier.height(6.dp))
                         OutlinedTextField(
                             value = editCustomTitleInput,
-                            onValueChange = { editCustomTitleInput = it },
+                            onValueChange = { editCustomTitleInput = it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase(Locale.getDefault()) else c.toString() } },
                             label = { Text("Вкажіть назву завдання") },
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -1738,8 +1744,9 @@ fun ClientTasksDialog(
 
                     OutlinedTextField(
                         value = editCustomText,
-                        onValueChange = { editCustomText = it },
+                        onValueChange = { editCustomText = it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase(Locale.getDefault()) else c.toString() } },
                         label = { Text("Коментар / Додатковий текст") },
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                         modifier = Modifier.fillMaxWidth(),
                         maxLines = 3
                     )
