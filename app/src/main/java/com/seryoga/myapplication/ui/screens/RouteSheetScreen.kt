@@ -8,11 +8,13 @@ import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.net.Uri
 import android.speech.RecognizerIntent
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -22,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -124,6 +127,7 @@ fun RouteSheetScreen(
     onBack: () -> Unit,
     onOpenClientDetail: (clientId: Long) -> Unit = {}
 ) {
+    val context = LocalContext.current
     val activeRouteSheet by viewModel.activeRouteSheet.collectAsState()
     val allClients by viewModel.allClients.collectAsState()
     var selectedItemForNote by remember { mutableStateOf<RouteSheetItemEntity?>(null) }
@@ -148,6 +152,44 @@ fun RouteSheetScreen(
     var localItems by remember(items) { mutableStateOf(items) }
     LaunchedEffect(items) {
         localItems = items
+    }
+
+    var showOnlyActiveTasksRouteItems by remember { mutableStateOf(false) }
+
+    val activeTaskClientsInRoute = remember(localItems, allClients) {
+        localItems.mapNotNull { item ->
+            val matched = allClients.find { it.client.id == item.clientId }
+                ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
+                ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
+            matched
+        }.filter { clientWithDetails ->
+            clientWithDetails.tasks.any { !it.isCompleted }
+        }.distinctBy { it.client.id }
+    }
+    val routeClientsWithActiveTasksCount = activeTaskClientsInRoute.size
+    val hasRouteClientsWithActiveTasks = routeClientsWithActiveTasksCount > 0
+
+    val hasMissingCoordinatesInRoute = remember(localItems, allClients) {
+        localItems.any { item ->
+            val matched = allClients.find { it.client.id == item.clientId }
+                ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
+                ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
+            val coords = matched?.client?.coordinatesManual
+            !isCoordinatesFieldFilled(coords)
+        }
+    }
+
+    val displayedLocalItems = remember(localItems, allClients, showOnlyActiveTasksRouteItems) {
+        if (showOnlyActiveTasksRouteItems) {
+            localItems.filter { item ->
+                val matched = allClients.find { it.client.id == item.clientId }
+                    ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
+                    ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
+                matched?.tasks?.any { !it.isCompleted } == true
+            }
+        } else {
+            localItems
+        }
     }
 
     val lazyListState = rememberLazyListState()
@@ -339,6 +381,52 @@ fun RouteSheetScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = {
+                            val missingCount = localItems.count { item ->
+                                val matched = allClients.find { it.client.id == item.clientId }
+                                    ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
+                                    ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
+                                !isCoordinatesFieldFilled(matched?.client?.coordinatesManual)
+                            }
+                            val msg = if (hasMissingCoordinatesInRoute) "У маршруті є клієнти без координат ($missingCount)" else "У всіх клієнтів є координати"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.Place,
+                                contentDescription = "Індикатор координат у маршруті",
+                                tint = if (hasMissingCoordinatesInRoute) Color(0xFFF44336) else Color(0xFF4CAF50)
+                            )
+                        }
+
+                        IconButton(onClick = { showOnlyActiveTasksRouteItems = !showOnlyActiveTasksRouteItems }) {
+                            Box(
+                                modifier = if (showOnlyActiveTasksRouteItems) {
+                                    Modifier
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f), CircleShape)
+                                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                                } else Modifier
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    if (routeClientsWithActiveTasksCount > 0) {
+                                        Text(
+                                            text = "$routeClientsWithActiveTasksCount",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (hasRouteClientsWithActiveTasks) Color(0xFFF44336) else Color(0xFF4CAF50)
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.Default.AssignmentLate,
+                                        contentDescription = "Фільтр за активними завданнями",
+                                        tint = if (hasRouteClientsWithActiveTasks) Color(0xFFF44336) else Color(0xFF4CAF50)
+                                    )
+                                }
+                            }
+                        }
+
                         IconButton(
                             onClick = {
                                 if (isManualOrderingMode) {
@@ -458,7 +546,7 @@ fun RouteSheetScreen(
                         contentPadding = PaddingValues(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(localItems, key = { it.id }) { item ->
+                        items(displayedLocalItems, key = { it.id }) { item ->
                             val index = localItems.indexOf(item)
 
                             fun getEffectiveCityForItem(routeItem: RouteSheetItemEntity): String {
