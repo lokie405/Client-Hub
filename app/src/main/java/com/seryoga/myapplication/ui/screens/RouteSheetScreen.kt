@@ -201,35 +201,76 @@ fun RouteSheetScreen(
     var pendingOptimizedList by remember { mutableStateOf<Pair<List<RouteSheetItemEntity>, Int>?>(null) }
     var showNavigationStagesDialog by remember { mutableStateOf<List<RouteItemWithLocation>?>(null) }
 
-    fun runRouteOptimization() {
+    fun runRouteOptimization(byCityOnly: Boolean = false) {
         scope.launch {
             isOptimizingRoute = true
             val (baseLat, baseLng) = getBaseLocation(context)
-            val resolvedList = mutableListOf<RouteItemWithLocation>()
-            val unresolvable = mutableListOf<RouteSheetItemEntity>()
 
-            localItems.forEach { item ->
-                val matched = allClients.find { it.client.id == item.clientId }
-                    ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
-                    ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
-
-                val loc = resolveRouteItemLocation(context, item, matched)
-                if (loc != null) {
-                    resolvedList.add(loc)
-                } else {
-                    unresolvable.add(item)
+            if (byCityOnly) {
+                val cityMap = mutableMapOf<String, MutableList<RouteSheetItemEntity>>()
+                localItems.forEach { item ->
+                    val matched = allClients.find { it.client.id == item.clientId }
+                        ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
+                        ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
+                    val city = (matched?.client?.city ?: item.clientCitySnapshot ?: "—").trim().ifBlank { "—" }
+                    cityMap.getOrPut(city) { mutableListOf() }.add(item)
                 }
-            }
 
-            isOptimizingRoute = false
+                val cityLocations = mutableListOf<RouteItemWithLocation>()
+                cityMap.keys.forEach { city ->
+                    if (city != "—") {
+                        val coords = resolveCityCenterLocation(context, city)
+                        if (coords != null) {
+                            val dummyItem = RouteSheetItemEntity(routeSheetId = 0, orderIndex = 0, clientShopSnapshot = city, clientCitySnapshot = city)
+                            cityLocations.add(RouteItemWithLocation(dummyItem, coords.first, coords.second, true))
+                        }
+                    }
+                }
 
-            if (resolvedList.isEmpty()) {
-                Toast.makeText(context, "Не вдалося визначити координати жодного клієнта", Toast.LENGTH_SHORT).show()
+                if (cityLocations.isEmpty()) {
+                    isOptimizingRoute = false
+                    Toast.makeText(context, "Не вдалося визначити географічне розміщення населених пунктів", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+
+                val optimizedCityLocations = optimizeRouteOrderTSPWithBase(baseLat, baseLng, cityLocations)
+                val sortedCities = optimizedCityLocations.map { it.item.clientShopSnapshot }
+                val remainingCities = cityMap.keys.filter { it !in sortedCities }
+
+                val reorderedItems = mutableListOf<RouteSheetItemEntity>()
+                (sortedCities + remainingCities).forEach { city ->
+                    cityMap[city]?.let { itemsInCity -> reorderedItems.addAll(itemsInCity) }
+                }
+
+                isOptimizingRoute = false
+                pendingOptimizedList = Pair(reorderedItems, 0)
             } else {
-                val optimizedLocations = optimizeRouteOrderTSPWithBase(baseLat, baseLng, resolvedList)
-                val reorderedItems = optimizedLocations.map { it.item } + unresolvable
-                val cityFallbackCount = resolvedList.count { it.isCityCenterFallback }
-                pendingOptimizedList = Pair(reorderedItems, cityFallbackCount)
+                val resolvedList = mutableListOf<RouteItemWithLocation>()
+                val unresolvable = mutableListOf<RouteSheetItemEntity>()
+
+                localItems.forEach { item ->
+                    val matched = allClients.find { it.client.id == item.clientId }
+                        ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
+                        ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
+
+                    val loc = resolveRouteItemLocation(context, item, matched)
+                    if (loc != null) {
+                        resolvedList.add(loc)
+                    } else {
+                        unresolvable.add(item)
+                    }
+                }
+
+                isOptimizingRoute = false
+
+                if (resolvedList.isEmpty()) {
+                    Toast.makeText(context, "Не вдалося визначити координати жодного клієнта", Toast.LENGTH_SHORT).show()
+                } else {
+                    val optimizedLocations = optimizeRouteOrderTSPWithBase(baseLat, baseLng, resolvedList)
+                    val reorderedItems = optimizedLocations.map { it.item } + unresolvable
+                    val cityFallbackCount = resolvedList.count { it.isCityCenterFallback }
+                    pendingOptimizedList = Pair(reorderedItems, cityFallbackCount)
+                }
             }
         }
     }
@@ -542,110 +583,157 @@ fun RouteSheetScreen(
                         }
                     },
                     actions = {
-                        IconButton(onClick = {
-                            val missingCount = localItems.count { item ->
-                                val matched = allClients.find { it.client.id == item.clientId }
-                                    ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
-                                    ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
-                                !isCoordinatesFieldFilled(matched?.client?.coordinatesManual)
-                            }
-                            val msg = if (hasMissingCoordinatesInRoute) "У маршруті є клієнти без координат ($missingCount)" else "У всіх клієнтів є координати"
-                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                        }) {
-                            Icon(
-                                imageVector = Icons.Default.Place,
-                                contentDescription = "Індикатор координат у маршруті",
-                                tint = if (hasMissingCoordinatesInRoute) Color(0xFFF44336) else Color(0xFF4CAF50)
-                            )
-                        }
-
-                        IconButton(onClick = { showOnlyActiveTasksRouteItems = !showOnlyActiveTasksRouteItems }) {
-                            Box(
-                                modifier = if (showOnlyActiveTasksRouteItems) {
-                                    Modifier
-                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f), CircleShape)
-                                        .padding(horizontal = 4.dp, vertical = 2.dp)
-                                } else Modifier
+                        Column(
+                            horizontalAlignment = Alignment.End,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(end = 2.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(0.dp)
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                                ) {
-                                    if (routeClientsWithActiveTasksCount > 0) {
-                                        Text(
-                                            text = "$routeClientsWithActiveTasksCount",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (hasRouteClientsWithActiveTasks) Color(0xFFF44336) else Color(0xFF4CAF50)
-                                        )
+                                IconButton(
+                                    modifier = Modifier.size(30.dp),
+                                    onClick = {
+                                        val missingCount = localItems.count { item ->
+                                            val matched = allClients.find { it.client.id == item.clientId }
+                                                ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
+                                                ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
+                                            !isCoordinatesFieldFilled(matched?.client?.coordinatesManual)
+                                        }
+                                        val msg = if (hasMissingCoordinatesInRoute) "У маршруті є клієнти без координат ($missingCount)" else "У всіх клієнтів є координати"
+                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                     }
+                                ) {
                                     Icon(
-                                        imageVector = Icons.Default.AssignmentLate,
-                                        contentDescription = "Фільтр за активними завданнями",
-                                        tint = if (hasRouteClientsWithActiveTasks) Color(0xFFF44336) else Color(0xFF4CAF50)
+                                        imageVector = Icons.Default.Place,
+                                        contentDescription = "Індикатор координат у маршруті",
+                                        tint = if (hasMissingCoordinatesInRoute) Color(0xFFF44336) else Color(0xFF4CAF50),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    modifier = Modifier.size(30.dp),
+                                    onClick = { showOnlyActiveTasksRouteItems = !showOnlyActiveTasksRouteItems }
+                                ) {
+                                    Box(
+                                        modifier = if (showOnlyActiveTasksRouteItems) {
+                                            Modifier
+                                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f), CircleShape)
+                                                .padding(horizontal = 3.dp, vertical = 1.dp)
+                                        } else Modifier
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(1.dp)
+                                        ) {
+                                            if (routeClientsWithActiveTasksCount > 0) {
+                                                Text(
+                                                    text = "$routeClientsWithActiveTasksCount",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (hasRouteClientsWithActiveTasks) Color(0xFFF44336) else Color(0xFF4CAF50)
+                                                )
+                                            }
+                                            Icon(
+                                                imageVector = Icons.Default.AssignmentLate,
+                                                contentDescription = "Фільтр за активними завданнями",
+                                                tint = if (hasRouteClientsWithActiveTasks) Color(0xFFF44336) else Color(0xFF4CAF50),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                IconButton(
+                                    modifier = Modifier.size(30.dp),
+                                    onClick = {
+                                        val newLock = !isLocked
+                                        viewModel.setRouteSheetLocked(newLock)
+                                        if (newLock && isManualOrderingMode) {
+                                            exitManualOrderingMode()
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                        contentDescription = if (isLocked) "Розблокувати" else "Заблокувати",
+                                        tint = if (isLocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }
-                        }
 
-                        IconButton(
-                            onClick = { runRouteOptimization() },
-                            enabled = !isLocked && localItems.isNotEmpty()
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AutoFixHigh,
-                                contentDescription = "Оптимізувати порядок маршруту",
-                                tint = if (isLocked || localItems.isEmpty()) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
-
-                        IconButton(
-                            onClick = { launchGoogleMapsNavigation() },
-                            enabled = localItems.isNotEmpty()
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Directions,
-                                contentDescription = "Побудувати маршрут у Google Картах",
-                                tint = if (localItems.isEmpty()) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.38f) else MaterialTheme.colorScheme.primary
-                            )
-                        }
-
-                        IconButton(
-                            onClick = {
-                                if (isManualOrderingMode) {
-                                    exitManualOrderingMode()
-                                } else if (!isLocked) {
-                                    isManualOrderingMode = true
-                                    manualAssignments.clear()
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(0.dp)
+                            ) {
+                                IconButton(
+                                    modifier = Modifier.size(30.dp),
+                                    onClick = { runRouteOptimization(byCityOnly = false) },
+                                    enabled = !isLocked && localItems.isNotEmpty()
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.AutoFixHigh,
+                                        contentDescription = "Оптимізувати порядок маршруту повністю",
+                                        tint = if (isLocked || localItems.isEmpty()) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(18.dp)
+                                    )
                                 }
-                            },
-                            enabled = !isLocked
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FormatListNumbered,
-                                contentDescription = "Упорядкування вручну",
-                                tint = if (isLocked) {
-                                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.38f)
-                                } else if (isManualOrderingMode) {
-                                    MaterialTheme.colorScheme.tertiary
-                                } else {
-                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                }
-                            )
-                        }
 
-                        IconButton(onClick = {
-                            val newLock = !isLocked
-                            viewModel.setRouteSheetLocked(newLock)
-                            if (newLock && isManualOrderingMode) {
-                                exitManualOrderingMode()
+                                IconButton(
+                                    modifier = Modifier.size(30.dp),
+                                    onClick = { runRouteOptimization(byCityOnly = true) },
+                                    enabled = !isLocked && localItems.isNotEmpty()
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.LocationCity,
+                                        contentDescription = "Оптимізувати порядок тільки по населених пунктах",
+                                        tint = if (isLocked || localItems.isEmpty()) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.38f) else Color(0xFFFF9800),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    modifier = Modifier.size(30.dp),
+                                    onClick = { launchGoogleMapsNavigation() },
+                                    enabled = localItems.isNotEmpty()
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Directions,
+                                        contentDescription = "Побудувати маршрут у Google Картах",
+                                        tint = if (localItems.isEmpty()) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.38f) else MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    modifier = Modifier.size(30.dp),
+                                    onClick = {
+                                        if (isManualOrderingMode) {
+                                            exitManualOrderingMode()
+                                        } else if (!isLocked) {
+                                            isManualOrderingMode = true
+                                            manualAssignments.clear()
+                                        }
+                                    },
+                                    enabled = !isLocked
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.FormatListNumbered,
+                                        contentDescription = "Упорядкування вручну",
+                                        tint = if (isLocked) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.38f)
+                                        } else if (isManualOrderingMode) {
+                                            MaterialTheme.colorScheme.tertiary
+                                        } else {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        },
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
-                        }) {
-                            Icon(
-                                if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
-                                contentDescription = if (isLocked) "Розблокувати" else "Заблокувати",
-                                tint = if (isLocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onPrimaryContainer
-                            )
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
@@ -1891,6 +1979,20 @@ suspend fun resolveRouteItemLocation(
 const val ROUTE_BASE_ADDRESS = "м. Рівне, вул. Князя Володимира 112А"
 const val BASE_DEFAULT_LAT = 50.6385
 const val BASE_DEFAULT_LNG = 26.2574
+
+suspend fun resolveCityCenterLocation(context: Context, city: String): Pair<Double, Double>? = withContext(Dispatchers.IO) {
+    if (city.isBlank() || city == "—") return@withContext null
+    try {
+        val geocoder = Geocoder(context, Locale.getDefault())
+        @Suppress("DEPRECATION")
+        val addresses = geocoder.getFromLocationName("$city, Україна", 1)
+        if (!addresses.isNullOrEmpty()) {
+            val a = addresses[0]
+            return@withContext Pair(a.latitude, a.longitude)
+        }
+    } catch (_: Exception) {}
+    null
+}
 
 suspend fun getBaseLocation(context: Context): Pair<Double, Double> = withContext(Dispatchers.IO) {
     try {
