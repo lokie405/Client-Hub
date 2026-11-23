@@ -4,11 +4,14 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.location.Geocoder
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.net.Uri
 import android.speech.RecognizerIntent
 import android.widget.Toast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateDpAsState
@@ -60,6 +63,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.seryoga.myapplication.data.ClientWithDetails
+import com.seryoga.myapplication.ui.parseCoordinates
 import com.seryoga.myapplication.data.RouteSheetItemEntity
 import com.seryoga.myapplication.ui.ClientGeoDetails
 import com.seryoga.myapplication.ui.ClientViewModel
@@ -128,6 +132,7 @@ fun RouteSheetScreen(
     onOpenClientDetail: (clientId: Long) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val activeRouteSheet by viewModel.activeRouteSheet.collectAsState()
     val allClients by viewModel.allClients.collectAsState()
     var selectedItemForNote by remember { mutableStateOf<RouteSheetItemEntity?>(null) }
@@ -189,6 +194,70 @@ fun RouteSheetScreen(
             }
         } else {
             localItems
+        }
+    }
+
+    var isOptimizingRoute by remember { mutableStateOf(false) }
+    var pendingOptimizedList by remember { mutableStateOf<Pair<List<RouteSheetItemEntity>, Int>?>(null) }
+    var showNavigationStagesDialog by remember { mutableStateOf<List<RouteItemWithLocation>?>(null) }
+
+    fun runRouteOptimization() {
+        scope.launch {
+            isOptimizingRoute = true
+            val resolvedList = mutableListOf<RouteItemWithLocation>()
+            val unresolvable = mutableListOf<RouteSheetItemEntity>()
+
+            localItems.forEach { item ->
+                val matched = allClients.find { it.client.id == item.clientId }
+                    ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
+                    ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
+
+                val loc = resolveRouteItemLocation(context, item, matched)
+                if (loc != null) {
+                    resolvedList.add(loc)
+                } else {
+                    unresolvable.add(item)
+                }
+            }
+
+            isOptimizingRoute = false
+
+            if (resolvedList.isEmpty()) {
+                Toast.makeText(context, "Не вдалося визначити координати жодного клієнта", Toast.LENGTH_SHORT).show()
+            } else {
+                val optimizedLocations = optimizeRouteOrderTSP(resolvedList)
+                val reorderedItems = optimizedLocations.map { it.item } + unresolvable
+                val cityFallbackCount = resolvedList.count { it.isCityCenterFallback }
+                pendingOptimizedList = Pair(reorderedItems, cityFallbackCount)
+            }
+        }
+    }
+
+    fun launchGoogleMapsNavigation() {
+        scope.launch {
+            isOptimizingRoute = true
+            val resolvedList = mutableListOf<RouteItemWithLocation>()
+
+            localItems.forEach { item ->
+                val matched = allClients.find { it.client.id == item.clientId }
+                    ?: allClients.find { !it.client.label.isNullOrBlank() && it.client.label.trim().equals(item.clientLabelSnapshot.trim(), ignoreCase = true) }
+                    ?: allClients.find { it.client.shopName.trim().equals(item.clientShopSnapshot.trim(), ignoreCase = true) }
+
+                val loc = resolveRouteItemLocation(context, item, matched)
+                if (loc != null) {
+                    resolvedList.add(loc)
+                }
+            }
+
+            isOptimizingRoute = false
+
+            if (resolvedList.isEmpty()) {
+                Toast.makeText(context, "Не вдалося визначити координати клієнтів", Toast.LENGTH_SHORT).show()
+            } else if (resolvedList.size <= 10) {
+                openGoogleMapsRouteSegment(context, resolvedList)
+            } else {
+                showNavigationStagesDialog = resolvedList
+            }
         }
     }
 
@@ -288,6 +357,94 @@ fun RouteSheetScreen(
                     viewModel.reorderRouteItems(list)
                 }
             }
+        )
+    }
+
+    if (pendingOptimizedList != null) {
+        val newList = pendingOptimizedList!!.first
+        val cityFallbackCount = pendingOptimizedList!!.second
+        val fallbackInfo = if (cityFallbackCount > 0) "\n\n(примітка: для $cityFallbackCount клієнтів без точних координат використано центр їхнього населеного пункту)" else ""
+
+        AlertDialog(
+            onDismissRequest = { pendingOptimizedList = null },
+            title = { Text("Оптимізувати порядок маршруту?") },
+            text = {
+                Text("Обчислено найоптимальніший шлях для ${newList.size} клієнтів.$fallbackInfo\n\nБажаєте оновити порядкові номери №1, №2, №3... у маршрутному листі?")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val listToSave = pendingOptimizedList!!.first
+                    pendingOptimizedList = null
+                    localItems = listToSave
+                    viewModel.reorderRouteItems(listToSave)
+                    Toast.makeText(context, "Порядок у маршрутнику оновлено!", Toast.LENGTH_SHORT).show()
+                }) {
+                    Text("Так, оновити порядок", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingOptimizedList = null }) {
+                    Text("Скасувати")
+                }
+            }
+        )
+    }
+
+    if (showNavigationStagesDialog != null) {
+        val resolved = showNavigationStagesDialog!!
+        val totalPoints = resolved.size
+        val chunkSize = 9
+        val stages = mutableListOf<List<RouteItemWithLocation>>()
+        var startIdx = 0
+        while (startIdx < totalPoints - 1) {
+            val endIdx = minOf(startIdx + chunkSize, totalPoints)
+            stages.add(resolved.subList(startIdx, endIdx))
+            startIdx = endIdx - 1
+        }
+
+        AlertDialog(
+            onDismissRequest = { showNavigationStagesDialog = null },
+            title = { Text("Навігація у Google Картах ($totalPoints точок)") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    Text("Через обмеження Google Карт у 10 зупинок, маршрут розбито на етапи:", style = MaterialTheme.typography.bodySmall)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    stages.forEachIndexed { idx, stage ->
+                        val startName = stage.first().item.clientShopSnapshot.ifBlank { stage.first().item.clientNameSnapshot }
+                        val endName = stage.last().item.clientShopSnapshot.ifBlank { stage.last().item.clientNameSnapshot }
+                        OutlinedButton(
+                            onClick = {
+                                showNavigationStagesDialog = null
+                                openGoogleMapsRouteSegment(context, stage)
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                        ) {
+                            Text("Етап ${idx + 1} (${idx * 8 + 1}–${idx * 8 + stage.size}): $startName ➔ $endName")
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showNavigationStagesDialog = null }) {
+                    Text("Закрити")
+                }
+            }
+        )
+    }
+
+    if (isOptimizingRoute) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Обробка маршруту...") },
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(36.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text("Розпізнавання координат та обчислення шляху...")
+                }
+            },
+            confirmButton = {}
         )
     }
 
@@ -425,6 +582,28 @@ fun RouteSheetScreen(
                                     )
                                 }
                             }
+                        }
+
+                        IconButton(
+                            onClick = { runRouteOptimization() },
+                            enabled = !isLocked && localItems.isNotEmpty()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AutoFixHigh,
+                                contentDescription = "Оптимізувати порядок маршруту",
+                                tint = if (isLocked || localItems.isEmpty()) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { launchGoogleMapsNavigation() },
+                            enabled = localItems.isNotEmpty()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Directions,
+                                contentDescription = "Побудувати маршрут у Google Картах",
+                                tint = if (localItems.isEmpty()) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.38f) else MaterialTheme.colorScheme.primary
+                            )
                         }
 
                         IconButton(
@@ -1663,5 +1842,127 @@ fun RouteItemNoteDialog(
                 Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.ime))
             }
         }
+    }
+}
+
+data class RouteItemWithLocation(
+    val item: RouteSheetItemEntity,
+    val lat: Double,
+    val lng: Double,
+    val isCityCenterFallback: Boolean
+)
+
+suspend fun resolveRouteItemLocation(
+    context: Context,
+    item: RouteSheetItemEntity,
+    matchedClient: ClientWithDetails?
+): RouteItemWithLocation? = withContext(Dispatchers.IO) {
+    val clientLat = matchedClient?.client?.latitude
+    val clientLng = matchedClient?.client?.longitude
+    if (clientLat != null && clientLng != null) {
+        return@withContext RouteItemWithLocation(item, clientLat, clientLng, false)
+    }
+
+    val manualCoordsStr = (matchedClient?.client?.coordinatesManual ?: "").trim()
+    val parsedCoords = parseCoordinates(manualCoordsStr)
+    if (parsedCoords != null) {
+        return@withContext RouteItemWithLocation(item, parsedCoords.first, parsedCoords.second, false)
+    }
+
+    val city = (matchedClient?.client?.city ?: item.clientCitySnapshot ?: "").trim()
+    if (city.isNotBlank()) {
+        try {
+            val geocoder = Geocoder(context, Locale.getDefault())
+            @Suppress("DEPRECATION")
+            val addresses = geocoder.getFromLocationName("$city, Україна", 1)
+            if (!addresses.isNullOrEmpty()) {
+                val addr = addresses[0]
+                return@withContext RouteItemWithLocation(item, addr.latitude, addr.longitude, true)
+            }
+        } catch (_: Exception) {}
+    }
+    null
+}
+
+fun calculateHaversineDistanceKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val r = 6371.0
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2)
+    val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+    return r * c
+}
+
+fun optimizeRouteOrderTSP(locations: List<RouteItemWithLocation>): List<RouteItemWithLocation> {
+    if (locations.size <= 2) return locations
+
+    val remaining = locations.toMutableList()
+    val route = mutableListOf<RouteItemWithLocation>()
+
+    var current = remaining.removeAt(0)
+    route.add(current)
+
+    while (remaining.isNotEmpty()) {
+        val nearest = remaining.minByOrNull {
+            calculateHaversineDistanceKm(current.lat, current.lng, it.lat, it.lng)
+        }!!
+        remaining.remove(nearest)
+        route.add(nearest)
+        current = nearest
+    }
+
+    var improved = true
+    var iterations = 0
+    while (improved && iterations < 100) {
+        improved = false
+        iterations++
+        for (i in 1 until route.size - 1) {
+            for (j in i + 1 until route.size) {
+                val d1 = calculateHaversineDistanceKm(route[i - 1].lat, route[i - 1].lng, route[i].lat, route[i].lng) +
+                         calculateHaversineDistanceKm(route[j].lat, route[j].lng, if (j + 1 < route.size) route[j + 1].lat else route[j].lat, if (j + 1 < route.size) route[j + 1].lng else route[j].lng)
+
+                val d2 = calculateHaversineDistanceKm(route[i - 1].lat, route[i - 1].lng, route[j].lat, route[j].lng) +
+                         calculateHaversineDistanceKm(route[i].lat, route[i].lng, if (j + 1 < route.size) route[j + 1].lat else route[j].lat, if (j + 1 < route.size) route[j + 1].lng else route[j].lng)
+
+                if (d2 < d1 - 0.001) {
+                    route.subList(i, j + 1).reverse()
+                    improved = true
+                }
+            }
+        }
+    }
+
+    return route
+}
+
+fun openGoogleMapsRouteSegment(context: Context, segment: List<RouteItemWithLocation>) {
+    if (segment.isEmpty()) return
+
+    val origin = "${segment.first().lat},${segment.first().lng}"
+    val destination = "${segment.last().lat},${segment.last().lng}"
+
+    val waypointsStr = if (segment.size > 2) {
+        segment.subList(1, segment.size - 1).joinToString("|") { "${it.lat},${it.lng}" }
+    } else null
+
+    val mapsUriStr = buildString {
+        append("https://www.google.com/maps/dir/?api=1")
+        append("&origin=").append(Uri.encode(origin))
+        append("&destination=").append(Uri.encode(destination))
+        if (!waypointsStr.isNullOrBlank()) {
+            append("&waypoints=").append(Uri.encode(waypointsStr))
+        }
+        append("&travelmode=driving")
+    }
+
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(mapsUriStr)).apply {
+        setPackage("com.google.android.apps.maps")
+    }
+    try {
+        context.startActivity(intent)
+    } catch (_: Exception) {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(mapsUriStr)))
     }
 }
