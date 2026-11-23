@@ -204,6 +204,7 @@ fun RouteSheetScreen(
     fun runRouteOptimization() {
         scope.launch {
             isOptimizingRoute = true
+            val (baseLat, baseLng) = getBaseLocation(context)
             val resolvedList = mutableListOf<RouteItemWithLocation>()
             val unresolvable = mutableListOf<RouteSheetItemEntity>()
 
@@ -225,7 +226,7 @@ fun RouteSheetScreen(
             if (resolvedList.isEmpty()) {
                 Toast.makeText(context, "Не вдалося визначити координати жодного клієнта", Toast.LENGTH_SHORT).show()
             } else {
-                val optimizedLocations = optimizeRouteOrderTSP(resolvedList)
+                val optimizedLocations = optimizeRouteOrderTSPWithBase(baseLat, baseLng, resolvedList)
                 val reorderedItems = optimizedLocations.map { it.item } + unresolvable
                 val cityFallbackCount = resolvedList.count { it.isCityCenterFallback }
                 pendingOptimizedList = Pair(reorderedItems, cityFallbackCount)
@@ -253,8 +254,8 @@ fun RouteSheetScreen(
 
             if (resolvedList.isEmpty()) {
                 Toast.makeText(context, "Не вдалося визначити координати клієнтів", Toast.LENGTH_SHORT).show()
-            } else if (resolvedList.size <= 10) {
-                openGoogleMapsRouteSegment(context, resolvedList)
+            } else if (resolvedList.size <= 8) {
+                openGoogleMapsRouteWithBase(context, ROUTE_BASE_ADDRESS, resolvedList, isFirstStage = true, isLastStage = true)
             } else {
                 showNavigationStagesDialog = resolvedList
             }
@@ -393,13 +394,13 @@ fun RouteSheetScreen(
     if (showNavigationStagesDialog != null) {
         val resolved = showNavigationStagesDialog!!
         val totalPoints = resolved.size
-        val chunkSize = 9
+        val chunkSize = 8
         val stages = mutableListOf<List<RouteItemWithLocation>>()
         var startIdx = 0
-        while (startIdx < totalPoints - 1) {
+        while (startIdx < totalPoints) {
             val endIdx = minOf(startIdx + chunkSize, totalPoints)
             stages.add(resolved.subList(startIdx, endIdx))
-            startIdx = endIdx - 1
+            startIdx = endIdx
         }
 
         AlertDialog(
@@ -407,19 +408,22 @@ fun RouteSheetScreen(
             title = { Text("Навігація у Google Картах ($totalPoints точок)") },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    Text("Через обмеження Google Карт у 10 зупинок, маршрут розбито на етапи:", style = MaterialTheme.typography.bodySmall)
+                    Text("База: $ROUTE_BASE_ADDRESS\nМаршрут розбито на етапи (до 10 зупинок у Картах):", style = MaterialTheme.typography.bodySmall)
                     Spacer(modifier = Modifier.height(10.dp))
                     stages.forEachIndexed { idx, stage ->
-                        val startName = stage.first().item.clientShopSnapshot.ifBlank { stage.first().item.clientNameSnapshot }
-                        val endName = stage.last().item.clientShopSnapshot.ifBlank { stage.last().item.clientNameSnapshot }
+                        val isFirst = idx == 0
+                        val isLast = idx == stages.size - 1
+                        val startName = if (isFirst) "м. Рівне (База)" else stage.first().item.clientShopSnapshot.ifBlank { stage.first().item.clientNameSnapshot }
+                        val endName = if (isLast) "м. Рівне (База)" else stage.last().item.clientShopSnapshot.ifBlank { stage.last().item.clientNameSnapshot }
+
                         OutlinedButton(
                             onClick = {
                                 showNavigationStagesDialog = null
-                                openGoogleMapsRouteSegment(context, stage)
+                                openGoogleMapsRouteWithBase(context, ROUTE_BASE_ADDRESS, stage, isFirstStage = isFirst, isLastStage = isLast)
                             },
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                         ) {
-                            Text("Етап ${idx + 1} (${idx * 8 + 1}–${idx * 8 + stage.size}): $startName ➔ $endName")
+                            Text("Етап ${idx + 1}: $startName ➔ $endName (${stage.size} зупинок)")
                         }
                     }
                 }
@@ -1884,6 +1888,23 @@ suspend fun resolveRouteItemLocation(
     null
 }
 
+const val ROUTE_BASE_ADDRESS = "м. Рівне, вул. Князя Володимира 112А"
+const val BASE_DEFAULT_LAT = 50.6385
+const val BASE_DEFAULT_LNG = 26.2574
+
+suspend fun getBaseLocation(context: Context): Pair<Double, Double> = withContext(Dispatchers.IO) {
+    try {
+        val geocoder = Geocoder(context, Locale.getDefault())
+        @Suppress("DEPRECATION")
+        val addresses = geocoder.getFromLocationName(ROUTE_BASE_ADDRESS, 1)
+        if (!addresses.isNullOrEmpty()) {
+            val a = addresses[0]
+            return@withContext Pair(a.latitude, a.longitude)
+        }
+    } catch (_: Exception) {}
+    Pair(BASE_DEFAULT_LAT, BASE_DEFAULT_LNG)
+}
+
 fun calculateHaversineDistanceKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     val r = 6371.0
     val dLat = Math.toRadians(lat2 - lat1)
@@ -1895,22 +1916,28 @@ fun calculateHaversineDistanceKm(lat1: Double, lon1: Double, lat2: Double, lon2:
     return r * c
 }
 
-fun optimizeRouteOrderTSP(locations: List<RouteItemWithLocation>): List<RouteItemWithLocation> {
-    if (locations.size <= 2) return locations
+fun optimizeRouteOrderTSPWithBase(
+    baseLat: Double,
+    baseLng: Double,
+    locations: List<RouteItemWithLocation>
+): List<RouteItemWithLocation> {
+    if (locations.isEmpty()) return emptyList()
+    if (locations.size == 1) return locations
 
     val remaining = locations.toMutableList()
     val route = mutableListOf<RouteItemWithLocation>()
 
-    var current = remaining.removeAt(0)
-    route.add(current)
+    var curLat = baseLat
+    var curLng = baseLng
 
     while (remaining.isNotEmpty()) {
         val nearest = remaining.minByOrNull {
-            calculateHaversineDistanceKm(current.lat, current.lng, it.lat, it.lng)
+            calculateHaversineDistanceKm(curLat, curLng, it.lat, it.lng)
         }!!
         remaining.remove(nearest)
         route.add(nearest)
-        current = nearest
+        curLat = nearest.lat
+        curLng = nearest.lng
     }
 
     var improved = true
@@ -1918,13 +1945,19 @@ fun optimizeRouteOrderTSP(locations: List<RouteItemWithLocation>): List<RouteIte
     while (improved && iterations < 100) {
         improved = false
         iterations++
-        for (i in 1 until route.size - 1) {
+        for (i in 0 until route.size - 1) {
             for (j in i + 1 until route.size) {
-                val d1 = calculateHaversineDistanceKm(route[i - 1].lat, route[i - 1].lng, route[i].lat, route[i].lng) +
-                         calculateHaversineDistanceKm(route[j].lat, route[j].lng, if (j + 1 < route.size) route[j + 1].lat else route[j].lat, if (j + 1 < route.size) route[j + 1].lng else route[j].lng)
+                val prevLat = if (i == 0) baseLat else route[i - 1].lat
+                val prevLng = if (i == 0) baseLng else route[i - 1].lng
 
-                val d2 = calculateHaversineDistanceKm(route[i - 1].lat, route[i - 1].lng, route[j].lat, route[j].lng) +
-                         calculateHaversineDistanceKm(route[i].lat, route[i].lng, if (j + 1 < route.size) route[j + 1].lat else route[j].lat, if (j + 1 < route.size) route[j + 1].lng else route[j].lng)
+                val nextLat = if (j + 1 < route.size) route[j + 1].lat else baseLat
+                val nextLng = if (j + 1 < route.size) route[j + 1].lng else baseLng
+
+                val d1 = calculateHaversineDistanceKm(prevLat, prevLng, route[i].lat, route[i].lng) +
+                         calculateHaversineDistanceKm(route[j].lat, route[j].lng, nextLat, nextLng)
+
+                val d2 = calculateHaversineDistanceKm(prevLat, prevLng, route[j].lat, route[j].lng) +
+                         calculateHaversineDistanceKm(route[i].lat, route[i].lng, nextLat, nextLng)
 
                 if (d2 < d1 - 0.001) {
                     route.subList(i, j + 1).reverse()
@@ -1937,15 +1970,26 @@ fun optimizeRouteOrderTSP(locations: List<RouteItemWithLocation>): List<RouteIte
     return route
 }
 
-fun openGoogleMapsRouteSegment(context: Context, segment: List<RouteItemWithLocation>) {
+fun openGoogleMapsRouteWithBase(
+    context: Context,
+    baseAddressOrCoords: String,
+    segment: List<RouteItemWithLocation>,
+    isFirstStage: Boolean,
+    isLastStage: Boolean
+) {
     if (segment.isEmpty()) return
 
-    val origin = "${segment.first().lat},${segment.first().lng}"
-    val destination = "${segment.last().lat},${segment.last().lng}"
+    val origin = if (isFirstStage) baseAddressOrCoords else "${segment.first().lat},${segment.first().lng}"
+    val destination = if (isLastStage) baseAddressOrCoords else "${segment.last().lat},${segment.last().lng}"
 
-    val waypointsStr = if (segment.size > 2) {
-        segment.subList(1, segment.size - 1).joinToString("|") { "${it.lat},${it.lng}" }
-    } else null
+    val waypointsList = when {
+        isFirstStage && isLastStage -> segment.map { "${it.lat},${it.lng}" }
+        isFirstStage -> segment.dropLast(1).map { "${it.lat},${it.lng}" }
+        isLastStage -> segment.drop(1).map { "${it.lat},${it.lng}" }
+        else -> if (segment.size > 2) segment.subList(1, segment.size - 1).map { "${it.lat},${it.lng}" } else emptyList()
+    }
+
+    val waypointsStr = if (waypointsList.isNotEmpty()) waypointsList.joinToString("|") else null
 
     val mapsUriStr = buildString {
         append("https://www.google.com/maps/dir/?api=1")
