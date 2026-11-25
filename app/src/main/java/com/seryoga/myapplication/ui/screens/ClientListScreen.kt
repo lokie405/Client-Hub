@@ -11,6 +11,7 @@ import android.net.Uri
 import java.io.File
 import android.speech.RecognizerIntent
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -82,6 +83,10 @@ fun ClientListScreen(
 ) {
     val clients by viewModel.clients.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+
+    BackHandler(enabled = searchQuery.isNotEmpty()) {
+        viewModel.updateSearchQuery("")
+    }
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     

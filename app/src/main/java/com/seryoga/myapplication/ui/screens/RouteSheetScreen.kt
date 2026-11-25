@@ -234,16 +234,13 @@ fun RouteSheetScreen(
                 }
 
                 val optimizedCityLocations = optimizeRouteOrderTSPWithBase(baseLat, baseLng, cityLocations)
-                val sortedCities = optimizedCityLocations.map { it.item.clientShopSnapshot }
-                val remainingCities = cityMap.keys.filter { it !in sortedCities }
-
-                val reorderedItems = mutableListOf<RouteSheetItemEntity>()
-                (sortedCities + remainingCities).forEach { city ->
-                    cityMap[city]?.let { itemsInCity -> reorderedItems.addAll(itemsInCity) }
-                }
-
                 isOptimizingRoute = false
-                pendingOptimizedList = Pair(reorderedItems, 0)
+
+                if (optimizedCityLocations.size <= 8) {
+                    openGoogleMapsRouteWithBase(context, ROUTE_BASE_ADDRESS, optimizedCityLocations, isFirstStage = true, isLastStage = true)
+                } else {
+                    showNavigationStagesDialog = optimizedCityLocations
+                }
             } else {
                 val resolvedList = mutableListOf<RouteItemWithLocation>()
                 val unresolvable = mutableListOf<RouteSheetItemEntity>()
